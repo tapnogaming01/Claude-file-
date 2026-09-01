@@ -9,7 +9,7 @@ db = client[config.MONGO_DB_NAME]
 
 mappings_col = db["mappings"]     # _id = source_channel_id (int) -> {story_name, story_slug, target_channel_id}
 stories_col = db["stories"]       # _id = story_slug -> {name, target_channel_id, episodes, pending_episodes, pending_file_count, dashboard_msg_id, total_blocks}
-settings_col = db["settings"]     # _id = "log_channel" / "verification"
+settings_col = db["settings"]     # _id = "log_channel" / "verification" / "forcesub"
 users_col = db["users"]          # _id = user_id -> {verified_at}
 
 
@@ -197,6 +197,26 @@ async def get_verification_settings():
 async def update_verification_settings(key: str, value):
     await settings_col.update_one(
         {"_id": "verification"},
+        {"$set": {key: value}},
+        upsert=True,
+    )
+
+
+# ---------------- Dynamic Force Sub Settings ----------------
+
+async def get_forcesub_settings():
+    doc = await settings_col.find_one({"_id": "forcesub"})
+    if not doc:
+        return {
+            "status": getattr(config, "DEFAULT_FORCE_SUB_STATUS", True),
+            "channel": getattr(config, "DEFAULT_FORCE_SUB_CHANNEL", "")
+        }
+    return doc
+
+
+async def update_forcesub_settings(key: str, value):
+    await settings_col.update_one(
+        {"_id": "forcesub"},
         {"$set": {key: value}},
         upsert=True,
     )
