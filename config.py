@@ -13,7 +13,8 @@ MONGO_URI = os.environ.get("MONGO_URI", "")
 MONGO_DB_NAME = os.environ.get("MONGO_DB_NAME", "episode_bot")
 
 # ---- Admins ----
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
+ADMINS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
+ADMIN_IDS = ADMINS  # Compatibility alias
 
 # ---- Batching ----
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "10"))
@@ -23,14 +24,19 @@ FILES_PER_BLOCK = int(os.environ.get("FILES_PER_BLOCK", "5"))
 DEFAULT_FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "")  # e.g. "@MyChannel" or "-100xxx"
 DEFAULT_FORCE_SUB_STATUS = os.environ.get("FORCE_SUB_STATUS", "True").lower() == "true"
 
-# ---- Shortener Defaults ----
+# ---- Dynamic Content Protection Default ----
+PROTECT_CONTENT = os.environ.get("PROTECT_CONTENT", "False").lower() == "true"
+
+# ---- Shortener & Verification Defaults ----
 SHORTENER_API_URL = os.environ.get("SHORTENER_API_URL", "gplinks.in")
 SHORTENER_API_KEY = os.environ.get("SHORTENER_API_KEY", "")
 
-# ---- Render ----
+# Token Expiry Time in Seconds (Default: 86400 Seconds = 24 Hours)
+VERIFY_EXPIRE_TIME = int(os.environ.get("VERIFY_EXPIRE_TIME", "86400"))
+
+# ---- Render & Server ----
 PORT = int(os.environ.get("PORT", "8080"))
 SESSION_NAME = os.environ.get("SESSION_NAME", "episode_bot")
 
-# 0 = OFF (फाइलें कभी डिलीट नहीं होंगी)
-# Seconds: 600 = 10 Minutes, 3600 = 1 Hour
-AUTO_DELETE_TIME = 600  # यहाँ सेकेंड्स में टाइम दर्ज करें
+# Auto-Delete Configuration (0 = OFF, 600 = 10 Minutes, 3600 = 1 Hour)
+AUTO_DELETE_TIME = int(os.environ.get("AUTO_DELETE_TIME", "600"))
