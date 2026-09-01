@@ -18,9 +18,9 @@ users_col = db["users"]          # _id = user_id -> {verified_at}
 async def add_mapping(source_channel_id: int, story_name: str, target_channel_id: int) -> str:
     story_slug = slugify(story_name)
 
-    # Allow multiple targets per source channel
+    # Allow multiple targets/stories per source channel
     await mappings_col.update_one(
-        {"source_channel_id": source_channel_id, "target_channel_id": target_channel_id},
+        {"source_channel_id": source_channel_id, "story_slug": story_slug},
         {"$set": {
             "source_channel_id": source_channel_id,
             "story_name": story_name,
@@ -53,8 +53,12 @@ async def remove_mapping(source_channel_id: int, target_channel_id: int = None):
 
 
 async def get_mappings(source_channel_id: int):
-    """Returns a list of all mappings for the source channel"""
+    """Source ID ke saare mappings fetch karta hai"""
     return [doc async for doc in mappings_col.find({"source_channel_id": source_channel_id})]
+
+
+# Listener safety alias for get_mappings
+get_mappings_by_source = get_mappings
 
 
 async def list_mappings():
