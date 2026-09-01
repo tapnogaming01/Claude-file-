@@ -10,7 +10,7 @@ db = client[config.MONGO_DB_NAME]
 
 mappings_col = db["mappings"]        # Multi-target mappings
 stories_col = db["stories"]          # _id = story_slug
-settings_col = db["settings"]        # _id = "log_channel" / "verification" / "forcesub"
+settings_col = db["settings"]        # _id = "log_channel" / "verification" / "forcesub" / "protection"
 users_col = db["users"]             # _id = user_id -> {verified_at}
 verify_tokens_col = db["tokens"]    # Temporary store for shortener verification tokens
 
@@ -20,7 +20,6 @@ verify_tokens_col = db["tokens"]    # Temporary store for shortener verification
 async def add_mapping(source_channel_id: int, story_name: str, target_channel_id: int) -> str:
     story_slug = slugify(story_name)
 
-    # Allow multiple targets/stories per source channel
     await mappings_col.update_one(
         {"source_channel_id": source_channel_id, "story_slug": story_slug},
         {"$set": {
@@ -55,7 +54,7 @@ async def remove_mapping(source_channel_id: int, target_channel_id: int = None):
 
 
 async def get_mappings(source_channel_id: int):
-    """Source ID ke saare mappings fetch karta hai"""
+    """Source ID के सारे mappings fetch करता है"""
     return [doc async for doc in mappings_col.find({"source_channel_id": source_channel_id})]
 
 
@@ -145,13 +144,19 @@ async def get_dashboard_msg_id(story_slug: str, target_channel_id: int):
 
 async def get_verification_settings():
     doc = await settings_col.find_one({"_id": "verification"})
+    default_timeout = getattr(config, "VERIFY_EXPIRE_TIME", 86400)
+    
     if not doc:
         return {
             "status": True,
             "api_url": getattr(config, "SHORTENER_API_URL", "gplinks.in"),
             "api_key": getattr(config, "SHORTENER_API_KEY", ""),
-            "token_timeout": 86400
+            "token_timeout": default_timeout
         }
+    
+    if "token_timeout" not in doc:
+        doc["token_timeout"] = default_timeout
+        
     return doc
 
 
@@ -161,6 +166,15 @@ async def update_verification_settings(key: str, value):
         {"$set": {key: value}},
         upsert=True,
     )
+
+
+# ---------------- Dynamic Protection Settings ----------------
+
+async def get_protect_settings() -> bool:
+    doc = await settings_col.find_one({"_id": "protection"})
+    if not doc:
+        return getattr(config, "PROTECT_CONTENT", False)
+    return doc.get("status", False)
 
 
 # ---------------- Verification Tokens Helper ----------------
