@@ -37,17 +37,18 @@ def get_delivery_keyboard(user_id: int):
 
 # --- Auto-Delete Task Helper ---
 async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list, delay_seconds: int):
-    """Deletes sent files after configured time and sends a warning message at the end of chat with channel button."""
+    """Deletes sent files after configured time and sends a FRESH warning message at the end of the chat with channel button."""
     if delay_seconds <= 0 or not message_ids:
         return
     
+    # ⏱️ सेट किए गए टाइम तक इंतज़ार करें
     await asyncio.sleep(delay_seconds)
     
     try:
-        # Delete sent files
+        # 1. फ़ाइलें डिलीट करें
         await client.delete_messages(chat_id=chat_id, message_ids=message_ids)
         
-        # Fetch Force Sub channel to build the update channel button
+        # 2. Force Sub Channel Fetch करें (Update Channel बटन के लिए)
         fs_settings = await db.get_forcesub_settings()
         force_channel = fs_settings.get("channel", "")
         
@@ -64,7 +65,7 @@ async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list
         minutes = delay_seconds // 60
         time_str = f"{minutes} Minutes" if minutes >= 1 else f"{delay_seconds} Seconds"
 
-        # Send deletion warning message at the very end of the chat
+        # 3. चैट के सबसे लास्ट (Bottom) में बिल्कुल NEW मैसेज भेजें
         await client.send_message(
             chat_id=chat_id,
             text=(
@@ -216,7 +217,6 @@ async def start_cmd(client: Client, message: Message):
         if user_id in CANCELLED_TASKS:
             CANCELLED_TASKS.remove(user_id)
             is_cancelled = True
-            await status_msg.edit_text(f"❌ **File Delivery Cancelled by User!** ({sent_count} files sent)")
             break
 
         ep_data = episodes.get(str(ep_no))
@@ -260,24 +260,38 @@ async def start_cmd(client: Client, message: Message):
         except Exception:
             pass
 
-    # Delivery Finished or Interrupted Logic
-    if not is_cancelled:
+    # Delivery & Cancel Handling with Auto-Delete Schedule
+    delete_timer = getattr(config, "AUTO_DELETE_TIME", 0)
+    mins = delete_timer // 60
+
+    if is_cancelled:
+        if sent_count > 0 and delete_timer > 0:
+            await status_msg.edit_text(
+                f"❌ **File Delivery Cancelled by User!** ({sent_count} files sent)\n\n"
+                f"⚠️ *These files will be automatically deleted in {mins} minutes.*"
+            )
+            # Cancel होने पर भी जितनी फ़ाइलें भेजी गई हैं, उनके लिए सबसे नीचे डिलीट मैसेज शेड्यूल होगा
+            asyncio.create_task(schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer))
+        else:
+            await status_msg.edit_text(f"❌ **File Delivery Cancelled by User!** ({sent_count} files sent)")
+    else:
         if sent_count == 0:
             await status_msg.edit_text("sᴏʀʀʏ, ɴᴏɴᴇ ᴏғ ᴛʜᴏsᴇ ᴇᴘɪsᴏᴅᴇs ᴀʀᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ʀɪɢʜᴛ ɴᴏᴡ.")
         else:
-            # Check configured auto-delete timer (In Seconds, 0 means Disabled)
-            delete_timer = getattr(config, "AUTO_DELETE_TIME", 0)
             if delete_timer > 0:
-                mins = delete_timer // 60
-                await status_msg.edit_text(f"✅ **Sent {sent_count} file(s)!**\n\n⚠️ *These files will be automatically deleted in {mins} minutes.*")
+                await status_msg.edit_text(
+                    f"✅ **Sent {sent_count} file(s)!**\n\n"
+                    f"⚠️ *These files will be automatically deleted in {mins} minutes.*"
+                )
+                # Delivery Complete होने पर सबसे नीचे नया डिलीट मैसेज आएगा
                 asyncio.create_task(schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer))
             else:
                 await status_msg.edit_text(f"✅ **Sent {sent_count} file(s) from {story_name} ({start_ep}-{end_ep})**.")
 
-        await log(
-            client,
-            f"📤 Batch {start_ep}-{end_ep} of *{story_name}* delivered to `{message.chat.id}` ({sent_count} file(s))"
-        )
+    await log(
+        client,
+        f"📤 Batch {start_ep}-{end_ep} of *{story_name}* processed for `{message.chat.id}` ({sent_count} file(s) delivered)"
+    )
 
 
 # --- Callback Handler ---
