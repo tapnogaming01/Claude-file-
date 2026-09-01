@@ -3,8 +3,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 def chunk_episodes(episodes: list, batch_size: int = 10):
     """
-    Episodes की लिस्ट (e.g. [1, 2, 3, ... 20]) को BATCH_SIZE (e.g. 10) के टुकड़ों में बांटता है।
-    Output: [[1, 2, ... 10], [11, 12, ... 20]]
+    Episodes की लिस्ट को BATCH_SIZE (e.g. 10) के टुकड़ों में बांटता है।
     """
     if not episodes:
         return []
@@ -12,13 +11,15 @@ def chunk_episodes(episodes: list, batch_size: int = 10):
     return [sorted_episodes[i : i + batch_size] for i in range(0, len(sorted_episodes), batch_size)]
 
 
-def build_batch_keyboard(story_slug: str, chunks: list, bot_username: str = None, per_row: int = 2):
+def build_batch_keyboard(bot_username: str, story_slug: str, chunks: list, per_row: int = 2):
     """
-    chunks: list of lists of episode numbers, e.g. [[211..220], [221..230]]
-    Generates batch deep-link buttons.
+    Direct Deep Link Buttons: https://t.me/<bot_username>?start=batch-<story_slug>-<start>-<end>
     """
     buttons = []
     row = []
+
+    # Clean username if @ is passed
+    clean_username = bot_username.replace("@", "") if bot_username else ""
 
     for chunk in chunks:
         if not chunk:
@@ -26,11 +27,8 @@ def build_batch_keyboard(story_slug: str, chunks: list, bot_username: str = None
         start, end = chunk[0], chunk[-1]
         label = f"📦 {start}-{end}" if start != end else f"📦 {start}"
         
-        # Deep link URL format
-        if bot_username:
-            url = f"https://t.me/{bot_username}?start=batch-{story_slug}-{start}-{end}"
-        else:
-            url = f"https://t.me/share/url?url=https://t.me/your_bot?start=batch-{story_slug}-{start}-{end}"
+        # Direct Telegram Deep Link
+        url = f"https://t.me/{clean_username}?start=batch-{story_slug}-{start}-{end}"
 
         row.append(InlineKeyboardButton(label, url=url))
 
