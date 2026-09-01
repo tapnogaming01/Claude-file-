@@ -3,10 +3,10 @@ import logging
 import os
 from aiohttp import web
 from pyrogram import Client, idle
-from pyrogram.errors import RPCError
 
 import config
 import database as db
+from background_indexer import start_background_indexing
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("episode_bot")
@@ -40,7 +40,7 @@ async def start_web_server():
 
 # --- Main Async Boot Function ---
 async def main():
-    # 1. Web Server Start (Render Port Scan Satisfied Immediately)
+    # 1. Web Server Start
     await start_web_server()
 
     # 2. Pyrogram Client Start
@@ -48,7 +48,11 @@ async def main():
     await app.start()
     logger.info("Pyrogram Client started successfully.")
 
-    # 3. Resolve Mapped Channels (Prevents Peer ID Invalid Error)
+    # 3. Background Live Indexing & Tracking Loop Start
+    asyncio.create_task(start_background_indexing(app))
+    logger.info("Background Auto-Indexing task initiated.")
+
+    # 4. Pre-resolve Mapped Target Channels into Session Cache
     try:
         mappings = await db.get_all_mappings() if hasattr(db, "get_all_mappings") else []
         for mapping in mappings:
@@ -57,11 +61,11 @@ async def main():
                 try:
                     await app.get_chat(target_id)
                 except Exception as e:
-                    logger.warning(f"Failed to pre-resolve target channel {target_id}: {e}")
+                    logger.warning(f"Could not pre-resolve channel {target_id}: {e}")
     except Exception as e:
-        logger.warning(f"Could not pre-resolve channels on startup: {e}")
+        logger.warning(f"Could not load mappings on startup: {e}")
 
-    # 4. Send Bot Startup Log Notification (Fixed Peer Resolution)
+    # 5. Send Startup Log Notification
     try:
         log_channel_id = (
             await db.get_log_channel()
@@ -72,20 +76,16 @@ async def main():
             startup_msg = (
                 "🚀 **ʙᴏᴛ sᴛᴀʀᴛᴇᴅ sᴜᴄᴄᴇssғᴜʟʟʏ!**\n\n"
                 "• **sʏsᴛᴇᴍ:** ᴏɴʟɪɴᴇ\n"
-                "• **ᴀᴜᴛᴏ-ɪɴᴅᴜᴄᴛɪᴏɴ:** ᴀᴄᴛɪᴠᴇ"
+                "• **ᴀᴜᴛᴏ-ɪɴᴅᴇxɪɴɢ:** ᴀᴄᴛɪᴠᴇ (ʙᴀᴄᴋɢʀᴏᴜɴᴅ ʟᴏᴏᴘ)"
             )
-            try:
-                await app.send_message(chat_id=log_channel_id, text=startup_msg)
-            except (ValueError, RPCError):
-                # Resolves the channel session peer automatically if invalid
-                log_chat = await app.get_chat(log_channel_id)
-                await app.send_message(chat_id=log_chat.id, text=startup_msg)
-
+            # Direct resolution pattern
+            log_chat = await app.get_chat(log_channel_id)
+            await app.send_message(chat_id=log_chat.id, text=startup_msg)
             logger.info("Startup notification sent to log channel.")
     except Exception as e:
         logger.error(f"Failed to send startup log notification: {e}")
 
-    # 5. Keep Bot Active
+    # 6. Keep Bot Active
     await idle()
     await app.stop()
 
