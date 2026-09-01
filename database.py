@@ -7,20 +7,22 @@ from utils import slugify
 client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_URI)
 db = client[config.MONGO_DB_NAME]
 
-mappings_col = db["mappings"]     # _id = source_channel_id (int) -> {story_name, story_slug, target_channel_id}
-stories_col = db["stories"]       # _id = story_slug -> {name, target_channel_id, episodes, pending_episodes, pending_file_count, dashboard_msg_id, total_blocks}
+mappings_col = db["mappings"]     # Multi-target mappings
+stories_col = db["stories"]       # _id = story_slug
 settings_col = db["settings"]     # _id = "log_channel" / "verification" / "forcesub"
 users_col = db["users"]          # _id = user_id -> {verified_at}
 
 
-# ---------------- Mappings (source channel -> story -> target channel) ----------------
+# ---------------- Mappings (source channel -> story -> target channels) ----------------
 
 async def add_mapping(source_channel_id: int, story_name: str, target_channel_id: int) -> str:
     story_slug = slugify(story_name)
 
+    # Allow multiple targets per source channel
     await mappings_col.update_one(
-        {"_id": source_channel_id},
+        {"source_channel_id": source_channel_id, "target_channel_id": target_channel_id},
         {"$set": {
+            "source_channel_id": source_channel_id,
             "story_name": story_name,
             "story_slug": story_slug,
             "target_channel_id": target_channel_id,
@@ -33,67 +35,26 @@ async def add_mapping(source_channel_id: int, story_name: str, target_channel_id
         await stories_col.insert_one({
             "_id": story_slug,
             "name": story_name,
-            "target_channel_id": target_channel_id,
             "episodes": {},
             "pending_episodes": [],
             "pending_file_count": 0,
             "total_blocks": 0,
-            "dashboard_msg_id": None
+            "dashboards": {}  # Format: {target_channel_id_str: message_id}
         })
 
     return story_slug
 
 
-async def remove_mapping(source_channel_id: int):
-    await mappings_col.delete_one({"_id": source_channel_id})
+async def remove_mapping(source_channel_id: int, target_channel_id: int = None):
+    query = {"source_channel_id": source_channel_id}
+    if target_channel_id:
+        query["target_channel_id"] = target_channel_id
+    await mappings_col.delete_many(query)
 
 
-async def update_target_channel(source_channel_id: int, new_target_channel_id: int):
-    mapping = await mappings_col.find_one({"_id": source_channel_id})
-    if not mapping:
-        return None
-
-    await mappings_col.update_one(
-        {"_id": source_channel_id},
-        {"$set": {"target_channel_id": new_target_channel_id}},
-    )
-    await stories_col.update_one(
-        {"_id": mapping["story_slug"]},
-        {"$set": {"target_channel_id": new_target_channel_id}},
-    )
-    return mapping["story_slug"]
-
-
-async def get_mapping(source_channel_id: int):
-    return await mappings_col.find_one({"_id": source_channel_id})
-
-
-async def get_all_mappings():
-    return [doc async for doc in mappings_col.find({})]
-
-
-async def backfill_story_slug(source_channel_id: int, story_slug: str):
-    await mappings_col.update_one(
-        {"_id": source_channel_id},
-        {"$set": {"story_slug": story_slug}},
-    )
-
-    mapping = await mappings_col.find_one({"_id": source_channel_id})
-    if not mapping:
-        return
-
-    existing = await stories_col.find_one({"_id": story_slug})
-    if not existing:
-        await stories_col.insert_one({
-            "_id": story_slug,
-            "name": mapping["story_name"],
-            "target_channel_id": mapping["target_channel_id"],
-            "episodes": {},
-            "pending_episodes": [],
-            "pending_file_count": 0,
-            "total_blocks": 0,
-            "dashboard_msg_id": None
-        })
+async def get_mappings(source_channel_id: int):
+    """Returns a list of all mappings for the source channel"""
+    return [doc async for doc in mappings_col.find({"source_channel_id": source_channel_id})]
 
 
 async def list_mappings():
@@ -104,14 +65,6 @@ async def list_mappings():
 
 async def get_story(story_slug: str):
     return await stories_col.find_one({"_id": story_slug})
-
-
-async def get_stories_by_source(source_channel_id: int):
-    mapping = await mappings_col.find_one({"_id": source_channel_id})
-    if not mapping:
-        return []
-    story = await stories_col.find_one({"_id": mapping.get("story_slug")})
-    return [story] if story else []
 
 
 async def save_episode(story_slug: str, episode_no: str, file_id: str, message_id: int, source_chat_id: int):
@@ -167,17 +120,19 @@ async def reset_pending(story_slug: str):
     )
 
 
-async def set_dashboard_msg_id(story_slug: str, message_id: int):
+async def set_dashboard_msg_id(story_slug: str, target_channel_id: int, message_id: int):
     await stories_col.update_one(
         {"_id": story_slug},
-        {"$set": {"dashboard_msg_id": message_id}},
+        {"$set": {f"dashboards.{target_channel_id}": message_id}},
         upsert=True,
     )
 
 
-async def get_dashboard_msg_id(story_slug: str):
+async def get_dashboard_msg_id(story_slug: str, target_channel_id: int):
     doc = await stories_col.find_one({"_id": story_slug})
-    return doc.get("dashboard_msg_id") if doc else None
+    if doc and "dashboards" in doc:
+        return doc["dashboards"].get(str(target_channel_id))
+    return None
 
 
 # ---------------- Dynamic Verification Settings ----------------
