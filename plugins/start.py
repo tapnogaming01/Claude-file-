@@ -36,44 +36,69 @@ def get_delivery_keyboard(user_id: int):
 
 
 # --- Auto-Delete Task Helper ---
-async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list, delay_seconds: int):
-    """Deletes sent files after configured time and sends a FRESH warning message at the end of the chat with channel button."""
+async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list, delay_seconds: int, payload: str):
+    """
+    Sends warning message at the bottom with Update Channel button,
+    deletes files after configured delay, then edits the warning message
+    to show deletion status with Get File Again button.
+    """
     if delay_seconds <= 0 or not message_ids:
         return
     
-    # ⏱️ सेट किए गए टाइम तक इंतज़ार करें
+    minutes = delay_seconds // 60
+    time_str = f"{minutes} minutes" if minutes >= 1 else f"{delay_seconds} seconds"
+
+    # 1. Update Channel URL प्राप्त करें
+    fs_settings = await db.get_forcesub_settings()
+    force_channel = fs_settings.get("channel", "")
+    
+    if force_channel:
+        clean_channel = str(force_channel).replace("@", "")
+        channel_url = f"https://t.me/{clean_channel}" if not clean_channel.startswith("-100") else f"https://t.me/c/{clean_channel[4:]}"
+    else:
+        channel_url = "https://t.me/your_update_channel"
+
+    # Important वार्निंग मैसेज के लिए केवल Update Channel बटन
+    update_channel_btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ", url=channel_url)]
+    ])
+
+    # 2. फ़ाइल डिलीवरी के तुरंत बाद चैट में सबसे नीचे Important वार्निंग मैसेज भेजें
+    warning_text = (
+        f"⚠️ **Important:**\n\n"
+        f"*All Messages will be deleted after **{time_str}**. "
+        f"Please save or forward these messages to your **personal saved messages** to avoid losing them!*"
+    )
+    
+    warning_msg = await client.send_message(
+        chat_id=chat_id,
+        text=warning_text,
+        reply_markup=update_channel_btn
+    )
+
+    # 3. सेट किए गए टाइम तक इंतज़ार करें
     await asyncio.sleep(delay_seconds)
     
     try:
-        # 1. फ़ाइलें डिलीट करें
+        # 4. भेजी गई सभी फ़ाइलें डिलीट करें
         await client.delete_messages(chat_id=chat_id, message_ids=message_ids)
         
-        # 2. Force Sub Channel Fetch करें (Update Channel बटन के लिए)
-        fs_settings = await db.get_forcesub_settings()
-        force_channel = fs_settings.get("channel", "")
-        
-        if force_channel:
-            clean_channel = str(force_channel).replace("@", "")
-            channel_url = f"https://t.me/{clean_channel}" if not clean_channel.startswith("-100") else f"https://t.me/c/{clean_channel[4:]}"
-        else:
-            channel_url = "https://t.me/your_update_channel"
+        # 5. Get Again बटन के लिए लिंक बनाएँ
+        bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
+        get_again_url = f"https://t.me/{bot_username}?start={payload}" if payload else f"https://t.me/{bot_username}?start=true"
 
-        delete_btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ", url=channel_url)]
+        get_again_btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📂 ɢᴇᴛ ғɪʟᴇ ᴀɢᴀɪɴ", url=get_again_url)]
         ])
 
-        minutes = delay_seconds // 60
-        time_str = f"{minutes} Minutes" if minutes >= 1 else f"{delay_seconds} Seconds"
-
-        # 3. चैट के सबसे लास्ट (Bottom) में बिल्कुल NEW मैसेज भेजें
-        await client.send_message(
-            chat_id=chat_id,
+        # 6. टाइम पूरा होने पर वार्निंग मैसेज को एडिट करके "Files Deleted" दिखाएं और Get Again बटन सेट करें
+        await warning_msg.edit_text(
             text=(
                 f"🗑️ **ʏᴏᴜʀ ғɪʟᴇs ʜᴀᴠᴇ ʙᴇᴇɴ ᴅᴇʟᴇᴛᴇᴅ!**\n\n"
                 f"⚠️ Files were automatically removed after **{time_str}** due to copyright policy.\n"
-                f"Please request or tap the batch link again to get them back."
+                f"Please tap the button below to get them back again."
             ),
-            reply_markup=delete_btn
+            reply_markup=get_again_btn
         )
 
     except Exception as e:
@@ -262,31 +287,28 @@ async def start_cmd(client: Client, message: Message):
 
     # Delivery & Cancel Handling with Auto-Delete Schedule
     delete_timer = getattr(config, "AUTO_DELETE_TIME", 0)
-    mins = delete_timer // 60
 
     if is_cancelled:
-        if sent_count > 0 and delete_timer > 0:
-            await status_msg.edit_text(
-                f"❌ **File Delivery Cancelled by User!** ({sent_count} files sent)\n\n"
-                f"⚠️ *These files will be automatically deleted in {mins} minutes.*"
-            )
-            # Cancel होने पर भी जितनी फ़ाइलें भेजी गई हैं, उनके लिए सबसे नीचे डिलीट मैसेज शेड्यूल होगा
-            asyncio.create_task(schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer))
-        else:
+        if sent_count > 0:
             await status_msg.edit_text(f"❌ **File Delivery Cancelled by User!** ({sent_count} files sent)")
+            if delete_timer > 0:
+                # कैंसिल होने पर भी भेजी गई फ़ाइलों के लिए सबसे नीचे Important मैसेज सेंड होगा और डिलीट टास्क शुरू होगा
+                asyncio.create_task(
+                    schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer, payload)
+                )
+        else:
+            await status_msg.edit_text("❌ **File Delivery Cancelled!** No files were sent.")
     else:
         if sent_count == 0:
             await status_msg.edit_text("sᴏʀʀʏ, ɴᴏɴᴇ ᴏғ ᴛʜᴏsᴇ ᴇᴘɪsᴏᴅᴇs ᴀʀᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ʀɪɢʜᴛ ɴᴏᴡ.")
         else:
+            await status_msg.edit_text(f"✅ **Sent {sent_count} file(s) from {story_name} ({start_ep}-{end_ep})**.")
+            
             if delete_timer > 0:
-                await status_msg.edit_text(
-                    f"✅ **Sent {sent_count} file(s)!**\n\n"
-                    f"⚠️ *These files will be automatically deleted in {mins} minutes.*"
+                # पूर्ण डिलीवरी होने पर सबसे नीचे Important मैसेज सेंड होगा और डिलीट टास्क शुरू होगा
+                asyncio.create_task(
+                    schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer, payload)
                 )
-                # Delivery Complete होने पर सबसे नीचे नया डिलीट मैसेज आएगा
-                asyncio.create_task(schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer))
-            else:
-                await status_msg.edit_text(f"✅ **Sent {sent_count} file(s) from {story_name} ({start_ep}-{end_ep})**.")
 
     await log(
         client,
