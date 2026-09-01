@@ -183,6 +183,13 @@ async def start_cmd(client: Client, message: Message):
     user_id = message.from_user.id
     args = message.command
 
+    # 0. Banned User Check
+    if await db.is_user_banned(user_id):
+        return await message.reply_text(
+            "🚫 **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ!**\n\n"
+            "ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ **ʙᴀɴɴᴇᴅ** ғʀᴏᴍ ᴜsɪɴɢ ᴛʜɪs ʙᴏᴛ ᴅᴜᴇ ᴛᴏ ᴍᴜʟᴛɪᴘʟᴇ ʙʏᴘᴀss ᴀᴛᴛᴇᴍᴘᴛs."
+        )
+
     # 1. Force Sub Check
     is_joined, fs_channel = await check_force_sub(client, user_id)
     if not is_joined:
@@ -217,9 +224,15 @@ async def start_cmd(client: Client, message: Message):
     if payload.startswith("verify_"):
         token = payload.split("verify_")[-1]
         
-        # 🔒 database.py से Payload और Status चेक
-        saved_payload, status = await db.get_verify_token_payload(user_id, token)
+        # 🔒 database.py से Payload, Bypass Count और Status चेक
+        res_payload, status = await db.get_verify_token_payload(user_id, token)
         
+        if status == "auto_banned":
+            return await message.reply_text(
+                "🚨 **🚨 ʙᴀɴɴᴇᴅ ᴀʟᴇʀᴛ! 🚨**\n\n"
+                "ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ **ᴘᴇʀᴍᴀɴᴇɴᴛʟʏ ʙᴀɴɴᴇᴅ** ғᴏʀ ᴀᴛᴛᴇᴍᴘᴛɪɴɢ ᴛᴏ ʙʏᴘᴀss ᴛʜᴇ sʜᴏʀᴛᴇɴᴇʀ **5 ᴛɪᴍᴇs**!"
+            )
+
         if status == "wrong_user":
             return await message.reply_text(
                 "⚠️ **Access Denied!**\n\n"
@@ -227,17 +240,18 @@ async def start_cmd(client: Client, message: Message):
             )
             
         if status == "bypassed":
+            count = res_payload  # When bypassed, res_payload carries the current count
             return await message.reply_text(
-                "🚨 **Nice try, hacker!** 😏\n\n"
-                "भाई, तू सिस्टम को बाईपास करने की कोशिश कर रहा है? 🛑\n"
-                "जितनी देर तू ये शॉर्टकट और बाईपास स्क्रिप्ट लगाने में लगाता है, उतने समय में तो genuine तरीके से लिंक ओपन करके फाइल मिल भी जाती! 🎬😂\n\n"
-                "कृपया थोड़ा सब्र रखो और सही तरीके से लिंक पास करो।"
+                f"🚨 **Nice try, hacker!** 😏\n\n"
+                f"भाई, तू सिस्टम को बाईपास करने की कोशिश कर रहा है? 🛑\n"
+                f"जितनी देर तू ये शॉर्टकट और बाईपास स्क्रिप्ट लगाने में लगाता है, उतने समय में तो genuine तरीके से लिंक ओपन करके फाइल मिल भी जाती! 🎬😂\n\n"
+                f"⚠️ **Warning:** Bypass Attempt **{count}/5**! (Reach 5 and you will be automatically banned)."
             )
         
         if status == "invalid":
             return await message.reply_text(
-                "❌ **Invalid or Already Used Link!**\n\n"
-                "This verification link has expired or has already been used. Please try accessing the file again to get a new link."
+                "❌ **Invalid or Expired Link!**\n\n"
+                "This link has expired or was already invalidated due to a bypass attempt. Please generate a new link."
             )
         
         # Verification Success: Update user verification timestamp
@@ -247,8 +261,8 @@ async def start_cmd(client: Client, message: Message):
         v_settings = await db.get_verification_settings()
         timeout_hours = v_settings.get("token_timeout", 86400) // 3600
 
-        if saved_payload:
-            get_files_url = f"https://t.me/{bot_username}?start={saved_payload}"
+        if res_payload:
+            get_files_url = f"https://t.me/{bot_username}?start={res_payload}"
             btn = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 ɢᴇᴛ ʏᴏᴜʀ ғɪʟᴇs", url=get_files_url)]
             ])
@@ -417,7 +431,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 "• **ғʀᴀᴍᴇᴡᴏʀᴋ:** ᴘʏʀᴏɢʀᴀᴍ (ᴘʏᴛʜᴏɴ 3)\n"
                 "• **ᴅᴀᴛᴀʙᴀsᴇ:** ᴍᴏɴɢᴏᴅʙ ᴀsʏɴᴄ (ᴍᴏᴛᴏʀ)\n"
                 "• **ᴅᴇᴠᴇʟᴏᴘᴇʀ:** [ᴋᴀʟᴜᴜ](https://t.me/Kaluu)\n"
-                "• **ᴠᴇʀsɪᴏɴ:** 2.0"
+                "• **ᴠᴇsɪᴏɴ:** 2.0"
             )
             await query.message.edit_text(about_text, reply_markup=BACK_BUTTON, disable_web_page_preview=True)
 
