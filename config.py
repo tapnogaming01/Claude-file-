@@ -30,3 +30,7 @@ SHORTENER_API_KEY = os.environ.get("SHORTENER_API_KEY", "")
 # ---- Render ----
 PORT = int(os.environ.get("PORT", "8080"))
 SESSION_NAME = os.environ.get("SESSION_NAME", "episode_bot")
+
+# 0 = OFF (फाइलें कभी डिलीट नहीं होंगी)
+# Seconds: 600 = 10 Minutes, 3600 = 1 Hour
+AUTO_DELETE_TIME = 600  # यहाँ सेकेंड्स में टाइम दर्ज करें
