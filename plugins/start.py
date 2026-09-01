@@ -1,13 +1,16 @@
 import time
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, FloodWait
 
 import config
 import database as db
 from plugins.verification import is_user_verified, get_shortlink
-
 from log_utils import log
+
+# Global dictionary to manage ongoing batch delivery cancellation
+CANCELLED_TASKS = set()
 
 # --- Inline Keyboards ---
 MAIN_START_BUTTONS = InlineKeyboardMarkup([
@@ -16,7 +19,7 @@ MAIN_START_BUTTONS = InlineKeyboardMarkup([
         InlineKeyboardButton("❓ ʜᴇʟᴘ", callback_data="help_btn")
     ],
     [
-        InlineKeyboardButton("👨‍💻 ᴅᴇᴠᴇʟᴏᴘᴇʀ", url="https://t.me/Kaluu")
+        InlineKeyboardButton("👑 ᴅᴇᴠᴇʟᴏᴘᴇʀ", url="https://t.me/Kaluu")
     ]
 ])
 
@@ -24,12 +27,36 @@ BACK_BUTTON = InlineKeyboardMarkup([
     [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="home_btn")]
 ])
 
+def get_delivery_keyboard(user_id: int):
+    """UI based on user's screenshot with Developer & Cancel buttons"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👑 ᴅᴇᴠᴇʟᴏᴘᴇʀ", url="https://t.me/Kaluu")],
+        [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data=f"cancel_batch_{user_id}")]
+    ])
+
+
+# --- Auto-Delete Task Helper ---
+async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list, delay_seconds: int):
+    """Deletes sent files after the configured time interval (if timer > 0)"""
+    if delay_seconds <= 0 or not message_ids:
+        return
+    await asyncio.sleep(delay_seconds)
+    try:
+        await client.delete_messages(chat_id=chat_id, message_ids=message_ids)
+        minutes = delay_seconds // 60
+        warning_msg = await client.send_message(
+            chat_id=chat_id,
+            text=f"🗑️ **Your files were deleted after {minutes} minutes due to copyright policy!**"
+        )
+        await asyncio.sleep(10)
+        await warning_msg.delete()
+    except Exception:
+        pass
+
 
 # --- Dynamic Force Join Helper ---
 async def check_force_sub(client: Client, user_id: int):
     fs_settings = await db.get_forcesub_settings()
-    
-    # अगर Force Sub OFF है तो सीधे एक्सेस दें
     if not fs_settings.get("status", True):
         return True, None
 
@@ -43,7 +70,6 @@ async def check_force_sub(client: Client, user_id: int):
             return False, force_channel
         return True, force_channel
     except Exception:
-        # अगर बॉट उस चैनल में एडमिन नहीं है तो बायपास करें
         return True, force_channel
 
 
@@ -51,9 +77,9 @@ async def check_force_sub(client: Client, user_id: int):
 @Client.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
     user_id = message.from_user.id
-    args = message.command  # e.g. ["start", "batch-slug-211-220"]
+    args = message.command
 
-    # 1. Dynamic Force Sub Check
+    # 1. Force Sub Check
     is_joined, fs_channel = await check_force_sub(client, user_id)
     if not is_joined:
         clean_channel = str(fs_channel).replace("@", "")
@@ -73,26 +99,22 @@ async def start_cmd(client: Client, message: Message):
             reply_markup=join_btn
         )
 
-    # 2. Normal /start command without parameters
+    # 2. Normal /start
     if len(args) < 2:
         welcome_text = (
             f"ʜɪ [{message.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
-            "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs. "
-            "ᴛᴀᴘ ᴀ ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ ɪɴ ᴛʜᴇ ᴄʜᴀɴɴᴇʟ, ᴀɴᴅ ɪ'ʟʟ sᴇɴᴅ ʏᴏᴜʀ ғɪʟᴇs ʀɪɢʜᴛ ʜᴇʀᴇ!"
+            "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs."
         )
-        return await message.reply_text(
-            text=welcome_text,
-            reply_markup=MAIN_START_BUTTONS
-        )
+        return await message.reply_text(text=welcome_text, reply_markup=MAIN_START_BUTTONS)
 
     payload = args[1]
 
-    # 3. Handle Token Verification Completion Callback Link
+    # 3. Verification Link Handler
     if payload.startswith("verify_"):
         await db.update_user_verification(user_id, time.time())
         return await message.reply_text("✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ 24 ʜᴏᴜʀs.")
 
-    # 4. Dynamic Shortener / Verification Check
+    # 4. Shortener Verification Check
     verified = await is_user_verified(user_id)
     if not verified:
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
@@ -107,7 +129,6 @@ async def start_cmd(client: Client, message: Message):
             [InlineKeyboardButton("❓ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ", url="https://t.me/your_help_channel")]
         ])
 
-        # IMPORTANT: 'return' stops file delivery until verified!
         return await message.reply_text(
             "🔒 **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ / ᴛᴏᴋᴇɴ ᴇxᴘɪʀᴇᴅ!**\n\n"
             f"ᴘʟᴇᴀsᴇ ᴠᴇʀɪғʏ ʏᴏᴜʀ ᴛᴏᴋᴇɴ ᴛᴏ ɢᴇᴛ {timeout_hours} ʜᴏᴜʀs ᴀᴄᴄᴇss ᴛᴏ ᴀʟʟ ғɪʟᴇs.",
@@ -132,12 +153,27 @@ async def start_cmd(client: Client, message: Message):
     episodes = story.get("episodes", {})
     story_name = story.get("name", story_slug)
 
-    status = await message.reply_text(f"sᴇɴᴅɪɴɢ {story_name} ᴇᴘɪsᴏᴅᴇs {start_ep}-{end_ep}...")
+    # Reset Cancel status if exists
+    CANCELLED_TASKS.discard(user_id)
+
+    # "PLEASE WAIT" Message with Developer & Cancel Buttons
+    status_msg = await message.reply_text(
+        "⚠️ **ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ**\n\n"
+        f"⏳ Processing **{story_name}** ({start_ep}-{end_ep})...",
+        reply_markup=get_delivery_keyboard(user_id)
+    )
 
     sent_file_ids = set()
+    delivered_message_ids = []
     sent_count = 0
 
     for ep_no in range(start_ep, end_ep + 1):
+        # Cancel Check
+        if user_id in CANCELLED_TASKS:
+            CANCELLED_TASKS.remove(user_id)
+            await status_msg.edit_text("❌ **File Delivery Cancelled by User!**")
+            break
+
         ep_data = episodes.get(str(ep_no))
         if not ep_data:
             continue
@@ -146,68 +182,97 @@ async def start_cmd(client: Client, message: Message):
             continue
         sent_file_ids.add(file_id)
 
-        file_episodes = [
-            int(k) for k, v in episodes.items() if v.get("file_id") == file_id
-        ]
+        file_episodes = [int(k) for k, v in episodes.items() if v.get("file_id") == file_id]
         file_episodes.sort()
 
         if len(file_episodes) > 1:
-            ep_caption = f"{story_name} — ᴇᴘɪsᴏᴅᴇs {file_episodes[0]}-{file_episodes[-1]}"
+            ep_caption = f"🎬 **{story_name}** — Episodes {file_episodes[0]}-{file_episodes[-1]}"
         else:
-            ep_caption = f"{story_name} — ᴇᴘɪsᴏᴅᴇ {ep_no}"
+            ep_caption = f"🎬 **{story_name}** — Episode {ep_no}"
 
         try:
-            await client.send_cached_media(
+            sent_msg = await client.send_cached_media(
                 chat_id=message.chat.id,
                 file_id=file_id,
-                caption=ep_caption,
+                caption=ep_caption
             )
+            delivered_message_ids.append(sent_msg.id)
             sent_count += 1
+
+            # ⏱️ 1.5 Second Delay to Prevent FloodWait
+            await asyncio.sleep(1.5)
+
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            sent_msg = await client.send_cached_media(
+                chat_id=message.chat.id,
+                file_id=file_id,
+                caption=ep_caption
+            )
+            delivered_message_ids.append(sent_msg.id)
+            sent_count += 1
+            await asyncio.sleep(1.5)
         except Exception:
             pass
 
-    if sent_count == 0:
-        await status.edit_text("sᴏʀʀʏ, ɴᴏɴᴇ ᴏғ ᴛʜᴏsᴇ ᴇᴘɪsᴏᴅᴇs ᴀʀᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ʀɪɢʜᴛ ɴᴏᴡ.")
-    else:
-        await status.edit_text(f"sᴇɴᴛ {sent_count} ғɪʟᴇ(s) ғʀᴏᴍ {story_name} ({start_ep}-{end_ep}).")
+    # Delivery Finished or Interrupted
+    if user_id not in CANCELLED_TASKS:
+        if sent_count == 0:
+            await status_msg.edit_text("sᴏʀʀʏ, ɴᴏɴᴇ ᴏғ ᴛʜᴏsᴇ ᴇᴘɪsᴏᴅᴇs ᴀʀᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ʀɪɢʜᴛ ɴᴏᴡ.")
+        else:
+            # Check configured auto-delete timer (In Seconds, 0 means Disabled)
+            delete_timer = getattr(config, "AUTO_DELETE_TIME", 0) # e.g., 600 for 10 min
+            if delete_timer > 0:
+                mins = delete_timer // 60
+                await status_msg.edit_text(f"✅ **Sent {sent_count} file(s)!**\n\n⚠️ *These files will be automatically deleted in {mins} minutes.*")
+                asyncio.create_task(schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer))
+            else:
+                await status_msg.edit_text(f"✅ **Sent {sent_count} file(s) from {story_name} ({start_ep}-{end_ep})**.")
 
-    await log(
-        client,
-        f"📤 Batch {start_ep}-{end_ep} of *{story_name}* delivered to "
-        f"`{message.chat.id}` ({sent_count} file(s))",
-    )
+        await log(
+            client,
+            f"📤 Batch {start_ep}-{end_ep} of *{story_name}* delivered to `{message.chat.id}` ({sent_count} file(s))"
+        )
 
 
-# --- Callback Query Handler for Inline Buttons ---
+# --- Callback Handler ---
 @Client.on_callback_query()
 async def callback_handler(client: Client, query: CallbackQuery):
     data = query.data
+    user_id = query.from_user.id
 
     try:
-        if data == "about_btn":
+        if data.startswith("cancel_batch_"):
+            target_user_id = int(data.split("_")[-1])
+            if user_id != target_user_id:
+                return await query.answer("⚠️ This is not your delivery process!", show_alert=True)
+            
+            CANCELLED_TASKS.add(user_id)
+            await query.answer("❌ Cancelling file delivery...", show_alert=True)
+
+        elif data == "about_btn":
             about_text = (
                 "⚙️ **ᴀʙᴏᴜᴛ ᴛʜɪs ʙᴏᴛ**\n\n"
                 "• **ғʀᴀᴍᴇᴡᴏʀᴋ:** ᴘʏʀᴏɢʀᴀᴍ (ᴘʏᴛʜᴏɴ 3)\n"
                 "• **ᴅᴀᴛᴀʙᴀsᴇ:** ᴍᴏɴɢᴏᴅʙ ᴀsʏɴᴄ (ᴍᴏᴛᴏʀ)\n"
                 "• **ᴅᴇᴠᴇʟᴏᴘᴇʀ:** [ᴋᴀʟᴜᴜ](https://t.me/Kaluu)\n"
-                "• **ᴠᴇsɪᴏɴ:** 2.0"
+                "• **ᴠᴇʀsɪᴏɴ:** 2.0"
             )
             await query.message.edit_text(about_text, reply_markup=BACK_BUTTON, disable_web_page_preview=True)
 
         elif data == "help_btn":
             help_text = (
                 "📖 **ʜᴇʟᴘ & ɪɴsᴛʀᴜᴄᴛɪᴏɴs**\n\n"
-                "1. ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴡʜᴇʀᴇ ʙᴀᴛᴄʜ ʟɪɴᴋs ᴀʀᴇ ᴘᴏsᴛᴇᴅ.\n"
+                "1. ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴡʜᴇʀᴇ ʙᴀᴛᴄʜ ʟɪɴɪs ᴀʀᴇ ᴘᴏsᴛᴇᴅ.\n"
                 "2. ᴄʟɪᴄᴋ ᴏɴ ᴀɴʏ ᴇᴘɪsᴏᴅᴇ/ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ.\n"
-                "3. ᴛʜᴇ ʙᴏᴛ ᴡɪʟʟ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ ᴀʟʟ ғɪʟᴇs ᴅɪʀᴇᴄᴛʟʏ ᴛᴏ ʏᴏᴜʀ ᴅᴍ!"
+                "3. ᴛʜᴇ ʙᴏᴛ ᴡɪʟʟ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ ᴀʟʟ ғɪʟᴇs!"
             )
             await query.message.edit_text(help_text, reply_markup=BACK_BUTTON)
 
         elif data == "home_btn":
             welcome_text = (
                 f"ʜɪ [{query.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
-                "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs. "
-                "ᴛᴀᴘ ᴀ ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ ɪɴ ᴛʜᴇ ᴄʜᴀɴɴᴇʟ, ᴀɴᴅ ɪ'ʟʟ sᴇɴᴅ ʏᴏᴜʀ ғɪʟᴇs ʀɪɢʜᴛ ʜᴇʀᴇ!"
+                "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs."
             )
             await query.message.edit_text(welcome_text, reply_markup=MAIN_START_BUTTONS)
 
