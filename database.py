@@ -1,40 +1,95 @@
+from pymongo import ReturnDocument
 import motor.motor_asyncio
 
 import config
+from utils import slugify
 
 client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_URI)
 db = client[config.MONGO_DB_NAME]
 
-mappings_col = db["mappings"]     # _id = source_channel_id (int) -> {story_name, target_channel_id}
-stories_col = db["stories"]       # _id = story_name -> {target_channel_id, target_message_id, episodes: {...}}
+mappings_col = db["mappings"]     # _id = source_channel_id (int) -> {story_name, story_slug, target_channel_id}
+stories_col = db["stories"]       # _id = story_slug -> {name, target_channel_id, episodes, pending_episodes, pending_file_count}
 settings_col = db["settings"]     # _id = "log_channel" -> {value: channel_id}
 
 
 # ---------------- Mappings (source channel -> story -> target channel) ----------------
 
-async def add_mapping(source_channel_id: int, story_name: str, target_channel_id: int):
+async def add_mapping(source_channel_id: int, story_name: str, target_channel_id: int) -> str:
+    story_slug = slugify(story_name)
+
     await mappings_col.update_one(
         {"_id": source_channel_id},
-        {"$set": {"story_name": story_name, "target_channel_id": target_channel_id}},
+        {"$set": {
+            "story_name": story_name,
+            "story_slug": story_slug,
+            "target_channel_id": target_channel_id,
+        }},
         upsert=True,
     )
 
-    existing = await stories_col.find_one({"_id": story_name})
+    existing = await stories_col.find_one({"_id": story_slug})
     if not existing:
         await stories_col.insert_one({
-            "_id": story_name,
+            "_id": story_slug,
+            "name": story_name,
             "target_channel_id": target_channel_id,
-            "target_message_id": None,
             "episodes": {},
+            "pending_episodes": [],
+            "pending_file_count": 0,
         })
+
+    return story_slug
 
 
 async def remove_mapping(source_channel_id: int):
     await mappings_col.delete_one({"_id": source_channel_id})
 
 
+async def update_target_channel(source_channel_id: int, new_target_channel_id: int):
+    """Changes only the target channel for an existing source mapping,
+    keeping the same source channel and story. Returns the story_slug on
+    success, or None if no mapping exists for that source channel."""
+    mapping = await mappings_col.find_one({"_id": source_channel_id})
+    if not mapping:
+        return None
+
+    await mappings_col.update_one(
+        {"_id": source_channel_id},
+        {"$set": {"target_channel_id": new_target_channel_id}},
+    )
+    await stories_col.update_one(
+        {"_id": mapping["story_slug"]},
+        {"$set": {"target_channel_id": new_target_channel_id}},
+    )
+    return mapping["story_slug"]
+
+
 async def get_mapping(source_channel_id: int):
     return await mappings_col.find_one({"_id": source_channel_id})
+
+
+async def backfill_story_slug(source_channel_id: int, story_slug: str):
+    """Repairs an old mapping doc (saved before story_slug existed) by
+    setting it, and makes sure a matching stories doc exists."""
+    await mappings_col.update_one(
+        {"_id": source_channel_id},
+        {"$set": {"story_slug": story_slug}},
+    )
+
+    mapping = await mappings_col.find_one({"_id": source_channel_id})
+    if not mapping:
+        return
+
+    existing = await stories_col.find_one({"_id": story_slug})
+    if not existing:
+        await stories_col.insert_one({
+            "_id": story_slug,
+            "name": mapping["story_name"],
+            "target_channel_id": mapping["target_channel_id"],
+            "episodes": {},
+            "pending_episodes": [],
+            "pending_file_count": 0,
+        })
 
 
 async def list_mappings():
@@ -43,13 +98,13 @@ async def list_mappings():
 
 # ---------------- Stories / episodes ----------------
 
-async def get_story(story_name: str):
-    return await stories_col.find_one({"_id": story_name})
+async def get_story(story_slug: str):
+    return await stories_col.find_one({"_id": story_slug})
 
 
-async def save_episode(story_name: str, episode_no: str, file_id: str, message_id: int, source_chat_id: int):
+async def save_episode(story_slug: str, episode_no: str, file_id: str, message_id: int, source_chat_id: int):
     await stories_col.update_one(
-        {"_id": story_name},
+        {"_id": story_slug},
         {"$set": {
             f"episodes.{episode_no}": {
                 "file_id": file_id,
@@ -61,11 +116,30 @@ async def save_episode(story_name: str, episode_no: str, file_id: str, message_i
     )
 
 
-async def set_target_message_id(story_name: str, message_id: int):
+# ---------------- Pending buffer (drives auto batch-block posting) ----------------
+
+async def add_pending_episode(story_slug: str, episode_no: int):
     await stories_col.update_one(
-        {"_id": story_name},
-        {"$set": {"target_message_id": message_id}},
+        {"_id": story_slug},
+        {"$addToSet": {"pending_episodes": episode_no}},
         upsert=True,
+    )
+
+
+async def increment_pending_file_count(story_slug: str):
+    """Increments the buffer's file counter and returns the full updated story doc."""
+    return await stories_col.find_one_and_update(
+        {"_id": story_slug},
+        {"$inc": {"pending_file_count": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def reset_pending(story_slug: str):
+    await stories_col.update_one(
+        {"_id": story_slug},
+        {"$set": {"pending_episodes": [], "pending_file_count": 0}},
     )
 
 
