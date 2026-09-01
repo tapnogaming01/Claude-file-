@@ -106,7 +106,9 @@ async def source_channel_handler(client: Client, message: Message):
             # exact batch size chunks from keyboard.py
             batch_size = getattr(config, "BATCH_SIZE", 10)
             chunks = chunk_episodes(pending_episodes, batch_size)
-            keyboard = build_batch_keyboard(story_slug, chunks)
+            
+            # 🔥 FIX: Pass config.BOT_USERNAME as 1st argument
+            keyboard = build_batch_keyboard(config.BOT_USERNAME, story_slug, chunks)
 
             post_text = (
                 f"🔥 **{story_name}**\n\n"
