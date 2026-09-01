@@ -3,6 +3,7 @@ import logging
 import os
 from aiohttp import web
 from pyrogram import Client, idle
+from pyrogram.errors import RPCError
 
 import config
 import database as db
@@ -18,6 +19,7 @@ app = Client(
     plugins=dict(root="plugins"),
 )
 
+
 # --- Render Health Check Route ---
 async def handle_health_check(request):
     return web.Response(text="Bot is alive and running!", status=200)
@@ -28,7 +30,7 @@ async def start_web_server():
     server.router.add_get("/", handle_health_check)
     runner = web.AppRunner(server)
     await runner.setup()
-    
+
     # Port detection for Render
     port = int(os.environ.get("PORT", getattr(config, "PORT", 8080)))
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -54,21 +56,31 @@ async def main():
             if target_id:
                 try:
                     await app.get_chat(target_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to pre-resolve target channel {target_id}: {e}")
     except Exception as e:
         logger.warning(f"Could not pre-resolve channels on startup: {e}")
 
-    # 4. Send Bot Startup Log Notification
+    # 4. Send Bot Startup Log Notification (Fixed Peer Resolution)
     try:
-        log_channel_id = await db.get_log_channel() if hasattr(db, "get_log_channel") else getattr(config, "LOG_CHANNEL", None)
+        log_channel_id = (
+            await db.get_log_channel()
+            if hasattr(db, "get_log_channel")
+            else getattr(config, "LOG_CHANNEL", None)
+        )
         if log_channel_id:
-            await app.send_message(
-                chat_id=log_channel_id,
-                text="🚀 **ʙᴏᴛ sᴛᴀʀᴛᴇᴅ sᴜᴄᴄᴇssғᴜʟʟʏ!**\n\n"
-                     "• **sʏsᴛᴇᴍ:** ᴏɴʟɪɴᴇ\n"
-                     "• **ᴀᴜᴛᴏ-ɪɴᴅᴜᴄᴛɪᴏɴ:** ᴀᴄᴛɪᴠᴇ"
+            startup_msg = (
+                "🚀 **ʙᴏᴛ sᴛᴀʀᴛᴇᴅ sᴜᴄᴄᴇssғᴜʟʟʏ!**\n\n"
+                "• **sʏsᴛᴇᴍ:** ᴏɴʟɪɴᴇ\n"
+                "• **ᴀᴜᴛᴏ-ɪɴᴅᴜᴄᴛɪᴏɴ:** ᴀᴄᴛɪᴠᴇ"
             )
+            try:
+                await app.send_message(chat_id=log_channel_id, text=startup_msg)
+            except (ValueError, RPCError):
+                # Resolves the channel session peer automatically if invalid
+                log_chat = await app.get_chat(log_channel_id)
+                await app.send_message(chat_id=log_chat.id, text=startup_msg)
+
             logger.info("Startup notification sent to log channel.")
     except Exception as e:
         logger.error(f"Failed to send startup log notification: {e}")
