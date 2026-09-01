@@ -1,8 +1,11 @@
+import time
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import MessageNotModified
+from pyrogram.errors import MessageNotModified, UserNotParticipant
 
+import config
 import database as db
+from utils.verification import is_user_verified, get_shortlink
 from log_utils import log
 
 # --- Inline Keyboards ---
@@ -21,15 +24,50 @@ BACK_BUTTON = InlineKeyboardMarkup([
 ])
 
 
+# --- Force Join Helper ---
+async def check_force_sub(client: Client, user_id: int):
+    force_channel = getattr(config, "FORCE_SUB_CHANNEL", None)
+    if not force_channel:
+        return True
+    try:
+        user = await client.get_chat_member(force_channel, user_id)
+        if user.status in ["kicked", "left"]:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 # --- Commands & Deep Link Handler ---
 @Client.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
+    user_id = message.from_user.id
     args = message.command  # e.g. ["start", "batch-slug-211-220"]
 
-    # 1. Normal /start command without deep link
+    # 1. Force Sub Check
+    if not await check_force_sub(client, user_id):
+        force_channel = getattr(config, "FORCE_SUB_CHANNEL", "")
+        invite_link = f"https://t.me/{str(force_channel).replace('@', '')}"
+        
+        # Deep link param pass back on retry
+        param = args[1] if len(args) > 1 else ""
+        bot_username = (await client.get_me()).username
+        try_again_url = f"https://t.me/{bot_username}?start={param}" if param else f"https://t.me/{bot_username}?start=true"
+
+        join_btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 ᴊᴏɪɴ ᴄʜᴀɴɴᴇʟ", url=invite_link)],
+            [InlineKeyboardButton("🔄 ᴛʀʏ ᴀɢᴀɪɴ", url=try_again_url)]
+        ])
+        return await message.reply_text(
+            "⚠️ **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ!**\n\n"
+            "ᴘʟᴇᴀsᴇ ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴛᴏ ᴜsᴇ ᴛʜɪs ʙᴏᴛ ᴀɴᴅ ɢᴇᴛ ʏᴏᴜʀ ғɪʟᴇs.",
+            reply_markup=join_btn
+        )
+
+    # 2. Normal /start command without deep link
     if len(args) < 2:
         welcome_text = (
-            "ʜɪ! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
+            f"ʜɪ [{message.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
             "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs. "
             "ᴛᴀᴘ ᴀ ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ ɪɴ ᴛʜᴇ ᴄʜᴀɴɴᴇʟ, ᴀɴᴅ ɪ'ʟʟ sᴇɴᴅ ʏᴏᴜʀ ғɪʟᴇs ʀɪɢʜᴛ ʜᴇʀᴇ!"
         )
@@ -38,9 +76,31 @@ async def start_cmd(client: Client, message: Message):
             reply_markup=MAIN_START_BUTTONS
         )
 
-    # 2. Deep link handling logic
+    # 3. Dynamic Verification Check
     payload = args[1]
+    verified = await is_user_verified(user_id)
+    if not verified:
+        bot_username = (await client.get_me()).username
+        original_link = f"https://t.me/{bot_username}?start={payload}"
+        short_link = await get_shortlink(original_link)
 
+        verify_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔓 ᴠᴇʀɪғʏ ᴛᴏᴋᴇɴ", url=short_link)],
+            [InlineKeyboardButton("❓ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ", url="https://t.me/your_help_channel")]
+        ])
+
+        return await message.reply_text(
+            "🔒 **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ / ᴛᴏᴋᴇɴ ᴇxᴘɪʀᴇᴅ!**\n\n"
+            "ᴘʟᴇᴀsᴇ ᴠᴇʀɪғʏ ʏᴏᴜʀ ᴛᴏᴋᴇɴ ᴛᴏ ɢᴇᴛ 1 ʜᴏᴜʀs ᴀᴄᴄᴇss ᴛᴏ ᴀʟʟ ғɪʟᴇs.",
+            reply_markup=verify_keyboard
+        )
+
+    # 4. Handle Verification Callback/Token Success
+    if payload.startswith("verify_"):
+        await db.update_user_verification(user_id, time.time())
+        return await message.reply_text("✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ 24 ʜᴏᴜʀs.")
+
+    # 5. Batch File Delivery Logic
     if not payload.startswith("batch-"):
         return await message.reply_text("ʜɪ! ɪ ᴅɪᴅɴ'ᴛ ʀᴇᴄᴏɢɴɪᴢᴇ ᴛʜᴀᴛ ʟɪɴᴋ.")
 
@@ -99,7 +159,7 @@ async def start_cmd(client: Client, message: Message):
 
     await log(
         client,
-        f"\U0001F4E4 Batch {start_ep}-{end_ep} of *{story_name}* delivered to "
+        f"📤 Batch {start_ep}-{end_ep} of *{story_name}* delivered to "
         f"`{message.chat.id}` ({sent_count} file(s))",
     )
 
@@ -131,7 +191,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
         elif data == "home_btn":
             welcome_text = (
-                "ʜɪ! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
+                f"ʜɪ [{query.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
                 "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs. "
                 "ᴛᴀᴘ ᴀ ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ ɪɴ ᴛʜᴇ ᴄʜᴀɴɴᴇʟ, ᴀɴᴅ ɪ'ʟʟ sᴇɴᴅ ʏᴏᴜʀ ғɪʟᴇs ʀɪɢʜᴛ ʜᴇʀᴇ!"
             )
