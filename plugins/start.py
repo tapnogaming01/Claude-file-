@@ -2,7 +2,7 @@ import time
 import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import MessageNotModified, FloodWait
+from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant, ChatAdminRequired, PeerIdInvalid
 
 import config
 import database as db
@@ -28,7 +28,7 @@ BACK_BUTTON = InlineKeyboardMarkup([
 ])
 
 def get_delivery_keyboard(user_id: int):
-    """UI based on user's screenshot with Developer & Cancel buttons"""
+    """UI with Developer & Cancel buttons"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👑 ᴅᴇᴠᴇʟᴏᴘᴇʀ", url="https://t.me/Kaluu")],
         [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data=f"cancel_batch_{user_id}")]
@@ -37,26 +37,52 @@ def get_delivery_keyboard(user_id: int):
 
 # --- Auto-Delete Task Helper ---
 async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list, delay_seconds: int):
-    """Deletes sent files after the configured time interval (if timer > 0)"""
+    """Deletes sent files after configured time and sends a warning message at the end of chat with channel button."""
     if delay_seconds <= 0 or not message_ids:
         return
+    
     await asyncio.sleep(delay_seconds)
+    
     try:
+        # Delete sent files
         await client.delete_messages(chat_id=chat_id, message_ids=message_ids)
+        
+        # Fetch Force Sub channel to build the update channel button
+        fs_settings = await db.get_forcesub_settings()
+        force_channel = fs_settings.get("channel", "")
+        
+        if force_channel:
+            clean_channel = str(force_channel).replace("@", "")
+            channel_url = f"https://t.me/{clean_channel}" if not clean_channel.startswith("-100") else f"https://t.me/c/{clean_channel[4:]}"
+        else:
+            channel_url = "https://t.me/your_update_channel"
+
+        delete_btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ", url=channel_url)]
+        ])
+
         minutes = delay_seconds // 60
-        warning_msg = await client.send_message(
+        time_str = f"{minutes} Minutes" if minutes >= 1 else f"{delay_seconds} Seconds"
+
+        # Send deletion warning message at the very end of the chat
+        await client.send_message(
             chat_id=chat_id,
-            text=f"🗑️ **Your files were deleted after {minutes} minutes due to copyright policy!**"
+            text=(
+                f"🗑️ **ʏᴏᴜʀ ғɪʟᴇs ʜᴀᴠᴇ ʙᴇᴇɴ ᴅᴇʟᴇᴛᴇᴅ!**\n\n"
+                f"⚠️ Files were automatically removed after **{time_str}** due to copyright policy.\n"
+                f"Please request or tap the batch link again to get them back."
+            ),
+            reply_markup=delete_btn
         )
-        await asyncio.sleep(10)
-        await warning_msg.delete()
-    except Exception:
-        pass
+
+    except Exception as e:
+        print(f"Error in auto-delete task: {e}")
 
 
 # --- Dynamic Force Join Helper ---
 async def check_force_sub(client: Client, user_id: int):
     fs_settings = await db.get_forcesub_settings()
+    
     if not fs_settings.get("status", True):
         return True, None
 
@@ -65,12 +91,29 @@ async def check_force_sub(client: Client, user_id: int):
         return True, None
 
     try:
-        user = await client.get_chat_member(force_channel, user_id)
+        if str(force_channel).startswith("-100") or str(force_channel).startswith("-"):
+            chat_target = int(force_channel)
+        else:
+            chat_target = str(force_channel) if str(force_channel).startswith("@") else f"@{force_channel}"
+    except ValueError:
+        chat_target = force_channel
+
+    try:
+        user = await client.get_chat_member(chat_id=chat_target, user_id=user_id)
         if user.status in ["kicked", "left"]:
-            return False, force_channel
-        return True, force_channel
-    except Exception:
-        return True, force_channel
+            return False, chat_target
+        return True, chat_target
+
+    except UserNotParticipant:
+        return False, chat_target
+        
+    except ChatAdminRequired:
+        print(f"⚠️ [ForceSub Error] Bot is NOT ADMIN in Force Sub channel: {chat_target}")
+        return True, chat_target
+        
+    except (PeerIdInvalid, Exception) as e:
+        print(f"❌ [ForceSub Exception] Error checking membership for {chat_target}: {e}")
+        return True, chat_target
 
 
 # --- Commands & Deep Link Handler ---
@@ -221,7 +264,7 @@ async def start_cmd(client: Client, message: Message):
             await status_msg.edit_text("sᴏʀʀʏ, ɴᴏɴᴇ ᴏғ ᴛʜᴏsᴇ ᴇᴘɪsᴏᴅᴇs ᴀʀᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ʀɪɢʜᴛ ɴᴏᴡ.")
         else:
             # Check configured auto-delete timer (In Seconds, 0 means Disabled)
-            delete_timer = getattr(config, "AUTO_DELETE_TIME", 0) # e.g., 600 for 10 min
+            delete_timer = getattr(config, "AUTO_DELETE_TIME", 0)
             if delete_timer > 0:
                 mins = delete_timer // 60
                 await status_msg.edit_text(f"✅ **Sent {sent_count} file(s)!**\n\n⚠️ *These files will be automatically deleted in {mins} minutes.*")
@@ -263,7 +306,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
         elif data == "help_btn":
             help_text = (
                 "📖 **ʜᴇʟᴘ & ɪɴsᴛʀᴜᴄᴛɪᴏɴs**\n\n"
-                "1. ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴡʜᴇʀᴇ ʙᴀᴛᴄʜ ʟɪɴɪs ᴀʀᴇ ᴘᴏsᴛᴇᴅ.\n"
+                "1. ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴡʜᴇʀᴇ ʙᴀᴛᴄʜ ʟɪɴᴋs ᴀʀᴇ ᴘᴏsᴛᴇᴅ.\n"
                 "2. ᴄʟɪᴄᴋ ᴏɴ ᴀɴʏ ᴇᴘɪsᴏᴅᴇ/ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ.\n"
                 "3. ᴛʜᴇ ʙᴏᴛ ᴡɪʟʟ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ ᴀʟʟ ғɪʟᴇs!"
             )
