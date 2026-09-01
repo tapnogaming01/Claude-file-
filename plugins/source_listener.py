@@ -1,15 +1,17 @@
 import logging
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import Message
 
 import config
 import database as db
 from episode_parser import extract_story_info
 from dashboard_format import get_dashboard_text
-from utils.keyboard import build_batch_keyboard, chunk_episodes
+from utils import slugify
+from keyboard import build_batch_keyboard, chunk_episodes
 from log_utils import log
 
 logger = logging.getLogger(__name__)
+
 
 @Client.on_message(filters.channel & (filters.document | filters.video | filters.audio))
 async def source_channel_handler(client: Client, message: Message):
@@ -19,7 +21,6 @@ async def source_channel_handler(client: Client, message: Message):
         return
 
     target_channel_id = mapping["target_channel_id"]
-    # डेटाबेस में मैप्ड story_slug और story_name ही यूज़ करें
     story_slug = mapping.get("story_slug")
     story_name = mapping.get("story_name", "Story")
 
@@ -30,15 +31,19 @@ async def source_channel_handler(client: Client, message: Message):
     if not episode_numbers:
         return
 
+    # अगर डेटाबेस में slug न मिला तो fallback slugify
+    if not story_slug:
+        story_slug = slugify(extracted_name or story_name)
+
     file_id = None
-    if message.document: 
+    if message.document:
         file_id = message.document.file_id
-    elif message.video: 
+    elif message.video:
         file_id = message.video.file_id
-    elif message.audio: 
+    elif message.audio:
         file_id = message.audio.file_id
 
-    if not file_id: 
+    if not file_id:
         return
 
     # 2. SAVE FILE & INCREMENT BUFFER
@@ -51,10 +56,9 @@ async def source_channel_handler(client: Client, message: Message):
     total_blocks = updated_story.get("total_blocks", 0)
 
     try:
-        # Resolve Target Channel Peer
         target_chat = await client.get_chat(target_channel_id)
     except Exception as e:
-        logger.error(f"Failed to get target chat: {e}")
+        logger.error(f"Failed to resolve target channel: {e}")
         return
 
     # 3. PERMANENT LIVE TRACKING DASHBOARD CARD
@@ -68,7 +72,7 @@ async def source_channel_handler(client: Client, message: Message):
 
     if dashboard_msg_id:
         try:
-            # पुराने परमानेंट मैसेज को ही रिफ्रेश (edit) करें
+            # पुराने परमानेंट लाइव मैसेज को ही रिफ्रेश करें
             await client.edit_message_text(
                 chat_id=target_chat.id,
                 message_id=dashboard_msg_id,
@@ -78,7 +82,6 @@ async def source_channel_handler(client: Client, message: Message):
             logger.warning(f"Failed to edit dashboard, creating new one: {e}")
             dashboard_msg_id = None
 
-    # अगर पहली बार फ़ाइल आ रही हो या पुराना मैसेज डिलीट हो गया हो
     if not dashboard_msg_id:
         try:
             new_dash = await client.send_message(
@@ -94,23 +97,23 @@ async def source_channel_handler(client: Client, message: Message):
         except Exception as e:
             logger.error(f"Failed to send dashboard message: {e}")
 
-    # 4. IF BUFFER REACHES LIMIT (e.g., 5 FILES) -> POST BATCH BUTTON BLOCK
+    # 4. IF BUFFER REACHES LIMIT -> POST BATCH BUTTON BLOCK
     if pending_file_count >= config.FILES_PER_BLOCK:
         pending_episodes = await db.get_pending_episodes(story_slug)
         if pending_episodes:
             pending_episodes.sort()
-            
-            # Episodes को BATCH_SIZE (जैसे 10-10) के टुकड़ों में बांटकर बटन बनाएं
-            chunks = chunk_episodes(pending_episodes, config.BATCH_SIZE)
+
+            # exact batch size chunks from keyboard.py
+            batch_size = getattr(config, "BATCH_SIZE", 10)
+            chunks = chunk_episodes(pending_episodes, batch_size)
             keyboard = build_batch_keyboard(story_slug, chunks)
-            
+
             post_text = (
                 f"🔥 **{story_name}**\n\n"
                 f"📦 **Episodes:** `{pending_episodes[0]}` - `{pending_episodes[-1]}`\n"
-                f"👇 नीचे दिए गए बटन पर क्लिक करके फाइलें प्राप्त करें:"
+                f"👇 नीचे दिए गए बटन पर क्लिक करके देखें:"
             )
 
-            # Target Channel में Batch Buttons पोस्ट करें
             await client.send_message(
                 chat_id=target_chat.id,
                 text=post_text,
