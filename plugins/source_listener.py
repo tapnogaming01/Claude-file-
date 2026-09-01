@@ -1,5 +1,6 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message
+from pyrogram.errors import RPCError
 
 import config
 import database as db
@@ -23,15 +24,13 @@ async def source_channel_handler(client: Client, message: Message):
     story_name = mapping["story_name"]
     target_channel_id = mapping["target_channel_id"]
 
-    # Mappings saved by an older version of the bot may not have a
-    # story_slug field yet — derive and persist it instead of crashing.
     story_slug = mapping.get("story_slug")
     if not story_slug:
         story_slug = slugify(story_name)
         await db.backfill_story_slug(source_id, story_slug)
 
     caption = message.caption or ""
-    episode_numbers = parse_episodes(caption)  # Uses episode_parser.py logic
+    episode_numbers = parse_episodes(caption)
 
     file_id = None
     if message.document:
@@ -44,8 +43,6 @@ async def source_channel_handler(client: Client, message: Message):
     if not file_id:
         return
 
-    # Save every episode this file covers (a combined file maps several
-    # episode numbers to the same file_id).
     for ep_no in episode_numbers:
         await db.save_episode(story_slug, ep_no, file_id, message.id, source_id)
         await db.add_pending_episode(story_slug, int(ep_no))
@@ -55,9 +52,9 @@ async def source_channel_handler(client: Client, message: Message):
 
     await log(
         client,
-        f"\U0001F4E5 **New file received**\nStory: *{story_name}*\n"
-        f"Episode(s): {', '.join(episode_numbers)}\n"
-        f"Buffer: {pending_file_count}/{config.FILES_PER_BLOCK} files",
+        f"📥 **ɴᴇᴡ ғɪʟᴇ ʀᴇᴄᴇɪᴠᴇᴅ**\nsᴛᴏʀʏ: *{story_name}*\n"
+        f"ᴇᴘɪsᴏᴅᴇ(s): {', '.join(episode_numbers)}\n"
+        f"ʙᴜғғᴇʀ: {pending_file_count}/{config.FILES_PER_BLOCK} ғɪʟᴇs",
     )
 
     if pending_file_count < config.FILES_PER_BLOCK:
@@ -73,21 +70,24 @@ async def source_channel_handler(client: Client, message: Message):
 
     text = (
         f"**{story_name}**\n"
-        f"EPS {pending_episodes[0]}-{pending_episodes[-1]}\n\n"
-        f"Tap a batch to get it in your DM \U0001F447"
+        f"ᴇᴘs {pending_episodes[0]}-{pending_episodes[-1]}\n\n"
+        f"ᴛᴀᴘ ᴀ ʙᴀᴛᴄʜ ᴛᴏ ɢᴇᴛ ɪᴛ ɪɴ ʏᴏᴜʀ ᴅᴍ 👇"
     )
 
-    # Permanent Fix: Catch Peer ID Invalid error and dynamically resolve channel
+    # Automatic Peer ID Fix for Target Channel
     try:
         await client.send_message(target_channel_id, text, reply_markup=keyboard)
-    except ValueError:
-        chat = await client.get_chat(target_channel_id)
-        await client.send_message(chat.id, text, reply_markup=keyboard)
+    except (ValueError, RPCError):
+        try:
+            chat = await client.get_chat(target_channel_id)
+            await client.send_message(chat.id, text, reply_markup=keyboard)
+        except Exception as e:
+            await log(client, f"❌ **ғᴀɪʟᴇᴅ ᴛᴏ ᴘᴏsᴛ ʙᴀᴛᴄʜ ᴛᴏ {target_channel_id}:** `{e}`")
 
     await db.reset_pending(story_slug)
 
     await log(
         client,
-        f"\U0001F4E6 **New batch block posted**\nStory: *{story_name}*\n"
-        f"Range: {pending_episodes[0]}-{pending_episodes[-1]}",
+        f"📦 **ɴᴇᴡ ʙᴀᴛᴄʜ ʙʟᴏᴄᴋ ᴘᴏsᴛᴇᴅ**\nsᴛᴏʀʏ: *{story_name}*\n"
+        f"ʀᴀɴɢᴇ: {pending_episodes[0]}-{pending_episodes[-1]}",
     )
