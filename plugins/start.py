@@ -1,7 +1,7 @@
 import time
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from pyrogram.errors import MessageNotModified, UserNotParticipant
+from pyrogram.errors import MessageNotModified
 
 import config
 import database as db
@@ -24,18 +24,26 @@ BACK_BUTTON = InlineKeyboardMarkup([
 ])
 
 
-# --- Force Join Helper ---
+# --- Dynamic Force Join Helper ---
 async def check_force_sub(client: Client, user_id: int):
-    force_channel = getattr(config, "FORCE_SUB_CHANNEL", None)
+    fs_settings = await db.get_forcesub_settings()
+    
+    # अगर Force Sub OFF है तो सीधे एक्सेस दें
+    if not fs_settings.get("status", True):
+        return True, None
+
+    force_channel = fs_settings.get("channel")
     if not force_channel:
-        return True
+        return True, None
+
     try:
         user = await client.get_chat_member(force_channel, user_id)
         if user.status in ["kicked", "left"]:
-            return False
-        return True
+            return False, force_channel
+        return True, force_channel
     except Exception:
-        return False
+        # अगर बॉट उस चैनल में एडमिन नहीं है तो बायपास करें
+        return True, force_channel
 
 
 # --- Commands & Deep Link Handler ---
@@ -44,14 +52,14 @@ async def start_cmd(client: Client, message: Message):
     user_id = message.from_user.id
     args = message.command  # e.g. ["start", "batch-slug-211-220"]
 
-    # 1. Force Sub Check
-    if not await check_force_sub(client, user_id):
-        force_channel = getattr(config, "FORCE_SUB_CHANNEL", "")
-        invite_link = f"https://t.me/{str(force_channel).replace('@', '')}"
+    # 1. Dynamic Force Sub Check
+    is_joined, fs_channel = await check_force_sub(client, user_id)
+    if not is_joined:
+        clean_channel = str(fs_channel).replace("@", "")
+        invite_link = f"https://t.me/{clean_channel}" if not clean_channel.startswith("-100") else f"https://t.me/c/{clean_channel[4:]}"
         
-        # Deep link param pass back on retry
         param = args[1] if len(args) > 1 else ""
-        bot_username = (await client.get_me()).username
+        bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         try_again_url = f"https://t.me/{bot_username}?start={param}" if param else f"https://t.me/{bot_username}?start=true"
 
         join_btn = InlineKeyboardMarkup([
@@ -64,7 +72,7 @@ async def start_cmd(client: Client, message: Message):
             reply_markup=join_btn
         )
 
-    # 2. Normal /start command without deep link
+    # 2. Normal /start command without parameters
     if len(args) < 2:
         welcome_text = (
             f"ʜɪ [{message.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
@@ -76,29 +84,34 @@ async def start_cmd(client: Client, message: Message):
             reply_markup=MAIN_START_BUTTONS
         )
 
-    # 3. Dynamic Verification Check
     payload = args[1]
+
+    # 3. Handle Token Verification Completion Callback Link
+    if payload.startswith("verify_"):
+        await db.update_user_verification(user_id, time.time())
+        return await message.reply_text("✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ 24 ʜᴏᴜʀs.")
+
+    # 4. Dynamic Shortener / Verification Check
     verified = await is_user_verified(user_id)
     if not verified:
-        bot_username = (await client.get_me()).username
+        bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         original_link = f"https://t.me/{bot_username}?start={payload}"
         short_link = await get_shortlink(original_link)
+
+        v_settings = await db.get_verification_settings()
+        timeout_hours = v_settings.get("token_timeout", 86400) // 3600
 
         verify_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔓 ᴠᴇʀɪғʏ ᴛᴏᴋᴇɴ", url=short_link)],
             [InlineKeyboardButton("❓ ʜᴏᴡ ᴛᴏ ᴠᴇʀɪғʏ", url="https://t.me/your_help_channel")]
         ])
 
+        # IMPORTANT: 'return' stops file delivery until verified!
         return await message.reply_text(
             "🔒 **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ / ᴛᴏᴋᴇɴ ᴇxᴘɪʀᴇᴅ!**\n\n"
-            "ᴘʟᴇᴀsᴇ ᴠᴇʀɪғʏ ʏᴏᴜʀ ᴛᴏᴋᴇɴ ᴛᴏ ɢᴇᴛ 1 ʜᴏᴜʀs ᴀᴄᴄᴇss ᴛᴏ ᴀʟʟ ғɪʟᴇs.",
+            f"ᴘʟᴇᴀsᴇ ᴠᴇʀɪғʏ ʏᴏᴜʀ ᴛᴏᴋᴇɴ ᴛᴏ ɢᴇᴛ {timeout_hours} ʜᴏᴜʀs ᴀᴄᴄᴇss ᴛᴏ ᴀʟʟ ғɪʟᴇs.",
             reply_markup=verify_keyboard
         )
-
-    # 4. Handle Verification Callback/Token Success
-    if payload.startswith("verify_"):
-        await db.update_user_verification(user_id, time.time())
-        return await message.reply_text("✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ 24 ʜᴏᴜʀs.")
 
     # 5. Batch File Delivery Logic
     if not payload.startswith("batch-"):
@@ -176,7 +189,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 "• **ғʀᴀᴍᴇᴡᴏʀᴋ:** ᴘʏʀᴏɢʀᴀᴍ (ᴘʏᴛʜᴏɴ 3)\n"
                 "• **ᴅᴀᴛᴀʙᴀsᴇ:** ᴍᴏɴɢᴏᴅʙ ᴀsʏɴᴄ (ᴍᴏᴛᴏʀ)\n"
                 "• **ᴅᴇᴠᴇʟᴏᴘᴇʀ:** [ᴋᴀʟᴜᴜ](https://t.me/Kaluu)\n"
-                "• **ᴠᴇʀsɪᴏɴ:** 2.0"
+                "• **ᴠᴇsɪᴏɴ:** 2.0"
             )
             await query.message.edit_text(about_text, reply_markup=BACK_BUTTON, disable_web_page_preview=True)
 
