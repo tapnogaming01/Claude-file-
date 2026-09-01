@@ -3,7 +3,6 @@ import logging
 import os
 from aiohttp import web
 from pyrogram import Client, idle
-from pyrogram.errors import RPCError
 
 import config
 import database as db
@@ -48,7 +47,7 @@ async def main():
     await app.start()
     logger.info("Pyrogram Client started successfully.")
 
-    # 3. Resolve Mapped Channels (Prevents Peer ID Invalid Error)
+    # 3. Pre-resolve Mapped Target Channels into Pyrogram Cache
     try:
         mappings = await db.get_all_mappings() if hasattr(db, "get_all_mappings") else []
         for mapping in mappings:
@@ -56,32 +55,32 @@ async def main():
             if target_id:
                 try:
                     await app.get_chat(target_id)
+                    logger.info(f"Pre-resolved target channel: {target_id}")
                 except Exception as e:
-                    logger.warning(f"Failed to pre-resolve target channel {target_id}: {e}")
+                    logger.warning(f"Could not pre-resolve target channel {target_id}: {e}")
     except Exception as e:
-        logger.warning(f"Could not pre-resolve channels on startup: {e}")
+        logger.warning(f"Could not load mappings on startup: {e}")
 
-    # 4. Send Bot Startup Log Notification (Fixed Peer Resolution)
+    # 4. Send Bot Startup Log Notification (Direct Pattern)
     try:
         log_channel_id = (
             await db.get_log_channel()
             if hasattr(db, "get_log_channel")
             else getattr(config, "LOG_CHANNEL", None)
         )
+        
         if log_channel_id:
             startup_msg = (
                 "🚀 **ʙᴏᴛ sᴛᴀʀᴛᴇᴅ sᴜᴄᴄᴇssғᴜʟʟʏ!**\n\n"
                 "• **sʏsᴛᴇᴍ:** ᴏɴʟɪɴᴇ\n"
                 "• **ᴀᴜᴛᴏ-ɪɴᴅᴜᴄᴛɪᴏɴ:** ᴀᴄᴛɪᴠᴇ"
             )
-            try:
-                await app.send_message(chat_id=log_channel_id, text=startup_msg)
-            except (ValueError, RPCError):
-                # Resolves the channel session peer automatically if invalid
-                log_chat = await app.get_chat(log_channel_id)
-                await app.send_message(chat_id=log_chat.id, text=startup_msg)
-
+            
+            # Filter Bot Pattern: Always resolve channel object first
+            log_chat = await app.get_chat(log_channel_id)
+            await app.send_message(chat_id=log_chat.id, text=startup_msg)
             logger.info("Startup notification sent to log channel.")
+            
     except Exception as e:
         logger.error(f"Failed to send startup log notification: {e}")
 
