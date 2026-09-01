@@ -1,5 +1,6 @@
 from pymongo import ReturnDocument
 import motor.motor_asyncio
+import time
 
 import config
 from utils import slugify
@@ -7,10 +8,11 @@ from utils import slugify
 client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_URI)
 db = client[config.MONGO_DB_NAME]
 
-mappings_col = db["mappings"]     # Multi-target mappings
-stories_col = db["stories"]       # _id = story_slug
-settings_col = db["settings"]     # _id = "log_channel" / "verification" / "forcesub"
-users_col = db["users"]          # _id = user_id -> {verified_at}
+mappings_col = db["mappings"]        # Multi-target mappings
+stories_col = db["stories"]          # _id = story_slug
+settings_col = db["settings"]        # _id = "log_channel" / "verification" / "forcesub"
+users_col = db["users"]             # _id = user_id -> {verified_at}
+verify_tokens_col = db["tokens"]    # Temporary store for shortener verification tokens
 
 
 # ---------------- Mappings (source channel -> story -> target channels) ----------------
@@ -159,6 +161,27 @@ async def update_verification_settings(key: str, value):
         {"$set": {key: value}},
         upsert=True,
     )
+
+
+# ---------------- Verification Tokens Helper ----------------
+
+async def save_verify_token(user_id: int, token: str, payload: str):
+    """Shortener Verification के लिए temporary token और फाइल payload सेव करता है"""
+    await verify_tokens_col.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "token": token,
+            "payload": payload,
+            "created_at": time.time()
+        }},
+        upsert=True,
+    )
+
+
+async def get_verify_token_payload(user_id: int, token: str) -> str:
+    """User का token चेक करके उसका original payload लाता है"""
+    doc = await verify_tokens_col.find_one({"user_id": user_id, "token": token})
+    return doc.get("payload", "") if doc else ""
 
 
 # ---------------- Dynamic Force Sub Settings ----------------
