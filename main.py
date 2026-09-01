@@ -1,6 +1,8 @@
+import asyncio
 import logging
+import os
 from aiohttp import web
-from pyrogram import Client
+from pyrogram import Client, idle
 
 import config
 import database as db
@@ -16,8 +18,7 @@ app = Client(
     plugins=dict(root="plugins"),
 )
 
-
-# --- Render Health Check Server (Async & Native) ---
+# --- Render Health Check Route ---
 async def handle_health_check(request):
     return web.Response(text="Bot is alive and running!", status=200)
 
@@ -27,45 +28,56 @@ async def start_web_server():
     server.router.add_get("/", handle_health_check)
     runner = web.AppRunner(server)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", config.PORT)
+    
+    # Port detection for Render
+    port = int(os.environ.get("PORT", getattr(config, "PORT", 8080)))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"Health-check web server started on port {config.PORT}")
+    logger.info(f"Health-check web server started on port {port}")
 
 
-# --- Bot Startup Routine ---
-async def on_startup(client: Client):
-    # 1. Start Async Health-Check Web Server
+# --- Main Async Boot Function ---
+async def main():
+    # 1. Web Server Start (Render Port Scan Satisfied Immediately)
     await start_web_server()
 
-    # 2. Resolve Mapped Channels (Prevents Peer ID Invalid Error permanently)
+    # 2. Pyrogram Client Start
+    logger.info("Starting Pyrogram Client...")
+    await app.start()
+    logger.info("Pyrogram Client started successfully.")
+
+    # 3. Resolve Mapped Channels (Prevents Peer ID Invalid Error)
     try:
         mappings = await db.get_all_mappings() if hasattr(db, "get_all_mappings") else []
         for mapping in mappings:
             target_id = mapping.get("target_channel_id")
             if target_id:
                 try:
-                    await client.get_chat(target_id)
+                    await app.get_chat(target_id)
                 except Exception:
                     pass
     except Exception as e:
         logger.warning(f"Could not pre-resolve channels on startup: {e}")
 
-    # 3. Send Bot Startup Log Notification
+    # 4. Send Bot Startup Log Notification
     try:
         log_channel_id = await db.get_log_channel() if hasattr(db, "get_log_channel") else getattr(config, "LOG_CHANNEL", None)
         if log_channel_id:
-            await client.send_message(
+            await app.send_message(
                 chat_id=log_channel_id,
-                text="🚀 **Bot Started Successfully!**\n\n"
-                     "• All systems operational.\n"
-                     "• Auto-induction & File Store active."
+                text="🚀 **ʙᴏᴛ sᴛᴀʀᴛᴇᴅ sᴜᴄᴄᴇssғᴜʟʟʏ!**\n\n"
+                     "• **sʏsᴛᴇᴍ:** ᴏɴʟɪɴᴇ\n"
+                     "• **ᴀᴜᴛᴏ-ɪɴᴅᴜᴄᴛɪᴏɴ:** ᴀᴄᴛɪᴠᴇ"
             )
             logger.info("Startup notification sent to log channel.")
     except Exception as e:
         logger.error(f"Failed to send startup log notification: {e}")
 
+    # 5. Keep Bot Active
+    await idle()
+    await app.stop()
+
 
 if __name__ == "__main__":
-    logger.info("Starting bot engine...")
-    app.start_handler = on_startup  # Auto-executes startup logic when bot boots up
-    app.run()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
