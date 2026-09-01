@@ -1,32 +1,12 @@
-import re
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
 import config
 import database as db
+from episode_parser import parse_episodes
 from keyboard import build_batch_keyboard
 from log_utils import log
 from utils import slugify
-
-# Improved Episode Range Extractor
-def parse_episodes(text: str) -> list[str]:
-    """
-    Extracts all episodes including ranges like '9 to 11', '9-11', '9 - 11', 'EP 9 TO 11'.
-    Returns a list of individual episode strings e.g. ["9", "10", "11"]
-    """
-    if not text:
-        return []
-
-    # Detect range patterns (e.g., "9 to 11", "09-11", "ep 09 to 11")
-    range_match = re.search(r'(\d+)\s*(?:to|-|\bto\b)\s*(\d+)', text, re.IGNORECASE)
-    if range_match:
-        start_ep = int(range_match.group(1))
-        end_ep = int(range_match.group(2))
-        if start_ep <= end_ep:
-            return [str(ep) for ep in range(start_ep, end_ep + 1)]
-
-    # Fallback to single numbers or list of numbers
-    return re.findall(r'\b\d+\b', text)
 
 
 def chunk_list(items, size):
@@ -43,13 +23,15 @@ async def source_channel_handler(client: Client, message: Message):
     story_name = mapping["story_name"]
     target_channel_id = mapping["target_channel_id"]
 
+    # Mappings saved by an older version of the bot may not have a
+    # story_slug field yet — derive and persist it instead of crashing.
     story_slug = mapping.get("story_slug")
     if not story_slug:
         story_slug = slugify(story_name)
         await db.backfill_story_slug(source_id, story_slug)
 
     caption = message.caption or ""
-    episode_numbers = parse_episodes(caption)  # Now correctly parses ranges like '9 to 11'
+    episode_numbers = parse_episodes(caption)  # Uses episode_parser.py logic
 
     file_id = None
     if message.document:
@@ -62,7 +44,8 @@ async def source_channel_handler(client: Client, message: Message):
     if not file_id:
         return
 
-    # Save every episode this file covers
+    # Save every episode this file covers (a combined file maps several
+    # episode numbers to the same file_id).
     for ep_no in episode_numbers:
         await db.save_episode(story_slug, ep_no, file_id, message.id, source_id)
         await db.add_pending_episode(story_slug, int(ep_no))
@@ -78,7 +61,7 @@ async def source_channel_handler(client: Client, message: Message):
     )
 
     if pending_file_count < config.FILES_PER_BLOCK:
-        return
+        return  # not enough new files yet, wait for more before posting a block
 
     pending_episodes = sorted(set(updated_story.get("pending_episodes", [])))
     if not pending_episodes:
@@ -94,11 +77,10 @@ async def source_channel_handler(client: Client, message: Message):
         f"Tap a batch to get it in your DM \U0001F447"
     )
 
-    # Solution 1: Handled Peer ID Invalid error gracefully using try-except
+    # Permanent Fix: Catch Peer ID Invalid error and dynamically resolve channel
     try:
         await client.send_message(target_channel_id, text, reply_markup=keyboard)
     except ValueError:
-        # Resolves channel peer automatically if missing in session cache
         chat = await client.get_chat(target_channel_id)
         await client.send_message(chat.id, text, reply_markup=keyboard)
 
