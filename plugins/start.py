@@ -37,20 +37,23 @@ def get_delivery_keyboard(user_id: int):
     ])
 
 
+# --- Dynamic Content Protection Helper ---
+async def get_protect_status() -> bool:
+    """डेटाबेस से प्रोटेक्ट कंटेंट का डायनेमिक स्टेटस लाता है"""
+    doc = await db.settings_col.find_one({"_id": "protection"})
+    if not doc:
+        return getattr(config, "PROTECT_CONTENT", False)
+    return doc.get("status", False)
+
+
 # --- Auto-Delete Task Helper ---
 async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list, delay_seconds: int, payload: str):
-    """
-    Sends warning message at the bottom with Update Channel button,
-    deletes files after configured delay, then edits the warning message
-    to show deletion status with Get File Again button.
-    """
     if delay_seconds <= 0 or not message_ids:
         return
     
     minutes = delay_seconds // 60
     time_str = f"{minutes} minutes" if minutes >= 1 else f"{delay_seconds} seconds"
 
-    # 1. Update Channel URL प्राप्त करें
     fs_settings = await db.get_forcesub_settings()
     force_channel = fs_settings.get("channel", "")
     
@@ -60,12 +63,10 @@ async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list
     else:
         channel_url = "https://t.me/your_update_channel"
 
-    # Important वार्निंग मैसेज के लिए केवल Update Channel बटन
     update_channel_btn = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ", url=channel_url)]
     ])
 
-    # 2. फ़ाइल डिलीवरी के तुरंत बाद चैट में सबसे नीचे Important वार्निंग मैसेज भेजें
     warning_text = (
         f"⚠️ **Important:**\n\n"
         f"*All Messages will be deleted after **{time_str}**. "
@@ -78,14 +79,11 @@ async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list
         reply_markup=update_channel_btn
     )
 
-    # 3. सेट किए गए टाइम तक इंतज़ार करें
     await asyncio.sleep(delay_seconds)
     
     try:
-        # 4. भेजी गई सभी फ़ाइलें डिलीट करें
         await client.delete_messages(chat_id=chat_id, message_ids=message_ids)
         
-        # 5. Get Again बटन के लिए लिंक बनाएँ
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         get_again_url = f"https://t.me/{bot_username}?start={payload}" if payload else f"https://t.me/{bot_username}?start=true"
 
@@ -93,7 +91,6 @@ async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list
             [InlineKeyboardButton("📂 ɢᴇᴛ ғɪʟᴇ ᴀɢᴀɪɴ", url=get_again_url)]
         ])
 
-        # 6. टाइम पूरा होने पर वार्निंग मैसेज को एडिट करके "Files Deleted" दिखाएं और Get Again बटन सेट करें
         await warning_msg.edit_text(
             text=(
                 f"🗑️ **ʏᴏᴜʀ ғɪʟᴇs ʜᴀᴠᴇ ʙᴇᴇɴ ᴅᴇʟᴇᴛᴇᴅ!**\n\n"
@@ -144,6 +141,42 @@ async def check_force_sub(client: Client, user_id: int):
         return True, chat_target
 
 
+# --- Dynamic Protection Toggle Command (Admin Only) ---
+@Client.on_message(filters.command("protect") & filters.private)
+async def toggle_protect_cmd(client: Client, message: Message):
+    if message.from_user.id not in getattr(config, "ADMINS", getattr(config, "ADMIN_IDS", [])):
+        return
+
+    args = message.command
+    if len(args) < 2:
+        curr_status = await get_protect_status()
+        status_text = "🟢 **ON**" if curr_status else "🔴 **OFF**"
+        return await message.reply_text(
+            f"🛡️ **Dynamic Protection Status:** {status_text}\n\n"
+            f"**Usage:** `/protect on` or `/protect off`"
+        )
+
+    val = args[1].lower()
+    if val in ["on", "true", "yes"]:
+        await db.settings_col.update_one({"_id": "protection"}, {"$set": {"status": True}}, upsert=True)
+        await message.reply_text("✅ **Content Protection enabled! Users cannot forward or save files.**")
+    elif val in ["off", "false", "no"]:
+        await db.settings_col.update_one({"_id": "protection"}, {"$set": {"status": False}}, upsert=True)
+        await message.reply_text("🔴 **Content Protection disabled! Forwarding allowed.**")
+    else:
+        await message.reply_text("⚠️ Invalid argument. Use `/protect on` or `/protect off`")
+
+
+# --- Dynamic Resetting Command (Admin Only) ---
+@Client.on_message(filters.command("reset") & filters.private)
+async def reset_settings_cmd(client: Client, message: Message):
+    if message.from_user.id not in getattr(config, "ADMINS", getattr(config, "ADMIN_IDS", [])):
+        return
+
+    await db.settings_col.delete_many({"_id": {"$in": ["protection", "verification", "forcesub"]}})
+    await message.reply_text("🔄 **All dynamic settings (Protection, Verification, ForceSub) reset to default!**")
+
+
 # --- Commands & Deep Link Handler ---
 @Client.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
@@ -180,14 +213,10 @@ async def start_cmd(client: Client, message: Message):
 
     payload = args[1]
 
-    # 3. Verification Link Handler (वेरिफिकेशन पास करके आने पर)
+    # 3. Verification Link Handler
     if payload.startswith("verify_"):
         token = payload.split("verify_")[-1]
-        
-        # टोकन से ओरिजिनल फाइल पेलोड प्राप्त करें
         saved_payload = await db.get_verify_token_payload(user_id, token)
-        
-        # यूज़र का वेरिफिकेशन टाइम डेटाबेस में अपडेट करें
         await db.update_user_verification(user_id, time.time())
         
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
@@ -213,18 +242,11 @@ async def start_cmd(client: Client, message: Message):
     verified = await is_user_verified(user_id)
     if not verified:
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
-        
-        # रैंडम वेरिफिकेशन टोकन जेनरेट करें
         token = "".join(random.choices(string.ascii_letters + string.digits, k=10))
         verify_payload = f"verify_{token}"
         
-        # टोकन और फ़ाइल पेलोड को DB में सेव करें
         await db.save_verify_token(user_id, token, payload)
-
-        # वेरिफिकेशन के लिए URL तैयार करें
         verification_link = f"https://t.me/{bot_username}?start={verify_payload}"
-        
-        # शॉर्टनर API से लिंक शॉर्ट करें
         short_link = await get_shortlink(verification_link)
 
         v_settings = await db.get_verification_settings()
@@ -259,10 +281,8 @@ async def start_cmd(client: Client, message: Message):
     episodes = story.get("episodes", {})
     story_name = story.get("name", story_slug)
 
-    # Reset Cancel status if exists
     CANCELLED_TASKS.discard(user_id)
 
-    # "PLEASE WAIT" Message with Developer & Cancel Buttons
     status_msg = await message.reply_text(
         "⚠️ **ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ**\n\n"
         f"⏳ Processing **{story_name}** ({start_ep}-{end_ep})...",
@@ -274,8 +294,10 @@ async def start_cmd(client: Client, message: Message):
     sent_count = 0
     is_cancelled = False
 
+    # Dynamic Protection Check
+    protect_content = await get_protect_status()
+
     for ep_no in range(start_ep, end_ep + 1):
-        # Cancel Check
         if user_id in CANCELLED_TASKS:
             CANCELLED_TASKS.remove(user_id)
             is_cancelled = True
@@ -301,12 +323,11 @@ async def start_cmd(client: Client, message: Message):
             sent_msg = await client.send_cached_media(
                 chat_id=message.chat.id,
                 file_id=file_id,
-                caption=ep_caption
+                caption=ep_caption,
+                protect_content=protect_content
             )
             delivered_message_ids.append(sent_msg.id)
             sent_count += 1
-
-            # ⏱️ 1.5 Second Delay to Prevent FloodWait
             await asyncio.sleep(1.5)
 
         except FloodWait as e:
@@ -314,7 +335,8 @@ async def start_cmd(client: Client, message: Message):
             sent_msg = await client.send_cached_media(
                 chat_id=message.chat.id,
                 file_id=file_id,
-                caption=ep_caption
+                caption=ep_caption,
+                protect_content=protect_content
             )
             delivered_message_ids.append(sent_msg.id)
             sent_count += 1
@@ -322,7 +344,6 @@ async def start_cmd(client: Client, message: Message):
         except Exception:
             pass
 
-    # Delivery & Cancel Handling with Auto-Delete Schedule
     delete_timer = getattr(config, "AUTO_DELETE_TIME", 0)
 
     if is_cancelled:
@@ -378,7 +399,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
         elif data == "help_btn":
             help_text = (
-                "📖 **ʜᴇʟᴘ & ɪɴsᴛʀᴜᴄᴛɪᴏNs**\n\n"
+                "📖 **ʜᴇʟᴘ & ɪɴsᴛʀᴜᴄᴛɪᴏɴs**\n\n"
                 "1. ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴡʜᴇʀᴇ ʙᴀᴛᴄʜ ʟɪɴᴋs ᴀʀᴇ ᴘᴏsᴛᴇᴅ.\n"
                 "2. ᴄʟɪᴄᴋ ᴏɴ ᴀɴʏ ᴇᴘɪsᴏᴅᴇ/ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ.\n"
                 "3. ᴛʜᴇ ʙᴏᴛ ᴡɪʟʟ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ ᴀʟʟ ғɪʟᴇs!"
@@ -387,7 +408,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
         elif data == "home_btn":
             welcome_text = (
-                f"ʜɪ [{query.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
+                f"ʜɪ [{query.from_user.first_name}]! ɪ ᴀ姆 ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
                 "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs."
             )
             await query.message.edit_text(welcome_text, reply_markup=MAIN_START_BUTTONS)
