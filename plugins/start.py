@@ -209,12 +209,14 @@ async def start_cmd(client: Client, message: Message):
     sent_file_ids = set()
     delivered_message_ids = []
     sent_count = 0
+    is_cancelled = False
 
     for ep_no in range(start_ep, end_ep + 1):
         # Cancel Check
         if user_id in CANCELLED_TASKS:
             CANCELLED_TASKS.remove(user_id)
-            await status_msg.edit_text("❌ **File Delivery Cancelled by User!**")
+            is_cancelled = True
+            await status_msg.edit_text(f"❌ **File Delivery Cancelled by User!** ({sent_count} files sent)")
             break
 
         ep_data = episodes.get(str(ep_no))
@@ -258,8 +260,8 @@ async def start_cmd(client: Client, message: Message):
         except Exception:
             pass
 
-    # Delivery Finished or Interrupted
-    if user_id not in CANCELLED_TASKS:
+    # Delivery Finished or Interrupted Logic
+    if not is_cancelled:
         if sent_count == 0:
             await status_msg.edit_text("sᴏʀʀʏ, ɴᴏɴᴇ ᴏғ ᴛʜᴏsᴇ ᴇᴘɪsᴏᴅᴇs ᴀʀᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ʀɪɢʜᴛ ɴᴏᴡ.")
         else:
