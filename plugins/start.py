@@ -5,7 +5,8 @@ from pyrogram.errors import MessageNotModified
 
 import config
 import database as db
-from utils.verification import is_user_verified, get_shortlink
+from plugins.verification import is_user_verified, get_shortlink
+
 from log_utils import log
 
 # --- Inline Keyboards ---
