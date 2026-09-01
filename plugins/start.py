@@ -1,5 +1,6 @@
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.errors import MessageNotModified
 
 import database as db
 from log_utils import log
@@ -7,16 +8,16 @@ from log_utils import log
 # --- Inline Keyboards ---
 MAIN_START_BUTTONS = InlineKeyboardMarkup([
     [
-        InlineKeyboardButton("ℹ️ About", callback_data="about_btn"),
-        InlineKeyboardButton("❓ Help", callback_data="help_btn")
+        InlineKeyboardButton("ℹ️ ᴀʙᴏᴜᴛ", callback_data="about_btn"),
+        InlineKeyboardButton("❓ ʜᴇʟᴘ", callback_data="help_btn")
     ],
     [
-        InlineKeyboardButton("👨‍💻 Developer", url="https://t.me/Kaluu")  # अपना डेवलपर यूजरनेम/लिंक डालें
+        InlineKeyboardButton("👨‍💻 ᴅᴇᴠᴇʟᴏᴘᴇʀ", url="https://t.me/Kaluu")
     ]
 ])
 
 BACK_BUTTON = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🔙 Back", callback_data="home_btn")]
+    [InlineKeyboardButton("🔙 ʙᴀᴄᴋ", callback_data="home_btn")]
 ])
 
 
@@ -28,9 +29,9 @@ async def start_cmd(client: Client, message: Message):
     # 1. Normal /start command without deep link
     if len(args) < 2:
         welcome_text = (
-            "Hi! I am an **Automated Smart File Store Bot** 🤖\n\n"
-            "I can automatically deliver story episodes and manage batch files. "
-            "Tap a batch button in the channel, and I'll send your files right here!"
+            "ʜɪ! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
+            "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs. "
+            "ᴛᴀᴘ ᴀ ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ ɪɴ ᴛʜᴇ ᴄʜᴀɴɴᴇʟ, ᴀɴᴅ ɪ'ʟʟ sᴇɴᴅ ʏᴏᴜʀ ғɪʟᴇs ʀɪɢʜᴛ ʜᴇʀᴇ!"
         )
         return await message.reply_text(
             text=welcome_text,
@@ -41,23 +42,23 @@ async def start_cmd(client: Client, message: Message):
     payload = args[1]
 
     if not payload.startswith("batch-"):
-        return await message.reply_text("Hi! I didn't recognize that link.")
+        return await message.reply_text("ʜɪ! ɪ ᴅɪᴅɴ'ᴛ ʀᴇᴄᴏɢɴɪᴢᴇ ᴛʜᴀᴛ ʟɪɴᴋ.")
 
     try:
         _, rest = payload.split("-", 1)
         story_slug, start_ep, end_ep = rest.rsplit("-", 2)
         start_ep, end_ep = int(start_ep), int(end_ep)
     except ValueError:
-        return await message.reply_text("That link looks broken — please tap the button again.")
+        return await message.reply_text("ᴛʜᴀᴛ ʟɪɴᴋ ʟᴏᴏᴋs ʙʀᴏᴋᴇɴ — ᴘʟᴇᴀsᴇ ᴛᴀᴘ ᴛʜᴇ ʙᴜᴛᴛᴏɴ ᴀɢᴀɪɴ.")
 
     story = await db.get_story(story_slug)
     if not story:
-        return await message.reply_text("Sorry, I couldn't find that story anymore.")
+        return await message.reply_text("sᴏʀʀʏ, ɪ ᴄᴏᴜʟᴅɴ'ᴛ ғɪɴᴅ ᴛʜᴀᴛ sᴛᴏʀʏ ᴀɴʏᴍᴏʀᴇ.")
 
     episodes = story.get("episodes", {})
     story_name = story.get("name", story_slug)
 
-    status = await message.reply_text(f"Sending {story_name} episodes {start_ep}-{end_ep}...")
+    status = await message.reply_text(f"sᴇɴᴅɪɴɢ {story_name} ᴇᴘɪsᴏᴅᴇs {start_ep}-{end_ep}...")
 
     sent_file_ids = set()
     sent_count = 0
@@ -77,9 +78,9 @@ async def start_cmd(client: Client, message: Message):
         file_episodes.sort()
 
         if len(file_episodes) > 1:
-            ep_caption = f"{story_name} — Episodes {file_episodes[0]}-{file_episodes[-1]}"
+            ep_caption = f"{story_name} — ᴇᴘɪsᴏᴅᴇs {file_episodes[0]}-{file_episodes[-1]}"
         else:
-            ep_caption = f"{story_name} — Episode {ep_no}"
+            ep_caption = f"{story_name} — ᴇᴘɪsᴏᴅᴇ {ep_no}"
 
         try:
             await client.send_cached_media(
@@ -92,9 +93,9 @@ async def start_cmd(client: Client, message: Message):
             pass
 
     if sent_count == 0:
-        await status.edit_text("Sorry, none of those episodes are available right now.")
+        await status.edit_text("sᴏʀʀʏ, ɴᴏɴᴇ ᴏғ ᴛʜᴏsᴇ ᴇᴘɪsᴏᴅᴇs ᴀʀᴇ ᴀᴠᴀɪʟᴀʙʟᴇ ʀɪɢʜᴛ ɴᴏᴡ.")
     else:
-        await status.edit_text(f"Sent {sent_count} file(s) from {story_name} ({start_ep}-{end_ep}).")
+        await status.edit_text(f"sᴇɴᴛ {sent_count} ғɪʟᴇ(s) ғʀᴏᴍ {story_name} ({start_ep}-{end_ep}).")
 
     await log(
         client,
@@ -108,29 +109,33 @@ async def start_cmd(client: Client, message: Message):
 async def callback_handler(client: Client, query: CallbackQuery):
     data = query.data
 
-    if data == "about_btn":
-        about_text = (
-            "⚙️ **About This Bot**\n\n"
-            "• **Framework:** Pyrogram (Python 3)\n"
-            "• **Database:** MongoDB Async (Motor)\n"
-            "• **Developer:** [Kaluu](https://t.me/Kaluu)\n"
-            "• **Version:** 2.0 (Automated File Store)"
-        )
-        await query.message.edit_text(about_text, reply_markup=BACK_BUTTON, disable_web_page_preview=True)
+    try:
+        if data == "about_btn":
+            about_text = (
+                "⚙️ **ᴀʙᴏᴜᴛ ᴛʜɪs ʙᴏᴛ**\n\n"
+                "• **ғʀᴀᴍᴇᴡᴏʀᴋ:** ᴘʏʀᴏɢʀᴀᴍ (ᴘʏᴛʜᴏɴ 3)\n"
+                "• **ᴅᴀᴛᴀʙᴀsᴇ:** ᴍᴏɴɢᴏᴅʙ ᴀsʏɴᴄ (ᴍᴏᴛᴏʀ)\n"
+                "• **ᴅᴇᴠᴇʟᴏᴘᴇʀ:** [ᴋᴀʟᴜᴜ](https://t.me/Kaluu)\n"
+                "• **ᴠᴇʀsɪᴏɴ:** 2.0"
+            )
+            await query.message.edit_text(about_text, reply_markup=BACK_BUTTON, disable_web_page_preview=True)
 
-    elif data == "help_btn":
-        help_text = (
-            "📖 **Help & Instructions**\n\n"
-            "1. Join our channel where batch links are posted.\n"
-            "2. Click on any episode/batch button.\n"
-            "3. The bot will automatically deliver all files directly to your DM!"
-        )
-        await query.message.edit_text(help_text, reply_markup=BACK_BUTTON)
+        elif data == "help_btn":
+            help_text = (
+                "📖 **ʜᴇʟᴘ & ɪɴsᴛʀᴜᴄᴛɪᴏɴs**\n\n"
+                "1. ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴡʜᴇʀᴇ ʙᴀᴛᴄʜ ʟɪɴᴋs ᴀʀᴇ ᴘᴏsᴛᴇᴅ.\n"
+                "2. ᴄʟɪᴄᴋ ᴏɴ ᴀɴʏ ᴇᴘɪsᴏᴅᴇ/ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ.\n"
+                "3. ᴛʜᴇ ʙᴏᴛ ᴡɪʟʟ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ ᴀʟʟ ғɪʟᴇs ᴅɪʀᴇᴄᴛʟʏ ᴛᴏ ʏᴏᴜʀ ᴅᴍ!"
+            )
+            await query.message.edit_text(help_text, reply_markup=BACK_BUTTON)
 
-    elif data == "home_btn":
-        welcome_text = (
-            "Hi! I am an **Automated Smart File Store Bot** 🤖\n\n"
-            "I can automatically deliver story episodes and manage batch files. "
-            "Tap a batch button in the channel, and I'll send your files right here!"
-        )
-        await query.message.edit_text(welcome_text, reply_markup=MAIN_START_BUTTONS)
+        elif data == "home_btn":
+            welcome_text = (
+                "ʜɪ! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
+                "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs. "
+                "ᴛᴀᴘ ᴀ ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ ɪɴ ᴛʜᴇ ᴄʜᴀɴɴᴇʟ, ᴀɴᴅ ɪ'ʟʟ sᴇɴᴅ ʏᴏᴜʀ ғɪʟᴇs ʀɪɢʜᴛ ʜᴇʀᴇ!"
+            )
+            await query.message.edit_text(welcome_text, reply_markup=MAIN_START_BUTTONS)
+
+    except MessageNotModified:
+        await query.answer("ᴀʟʀᴇᴀᴅʏ sʜᴏᴡɪɴɢ ᴛʜɪs ᴘᴀɢᴇ!")
