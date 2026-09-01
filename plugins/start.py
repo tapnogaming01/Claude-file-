@@ -1,5 +1,7 @@
 import time
 import asyncio
+import random
+import string
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from pyrogram.errors import MessageNotModified, FloodWait, UserNotParticipant, ChatAdminRequired, PeerIdInvalid
@@ -178,17 +180,52 @@ async def start_cmd(client: Client, message: Message):
 
     payload = args[1]
 
-    # 3. Verification Link Handler
+    # 3. Verification Link Handler (वेरिफिकेशन पास करके आने पर)
     if payload.startswith("verify_"):
+        token = payload.split("verify_")[-1]
+        
+        # टोकन से ओरिजिनल फाइल पेलोड प्राप्त करें
+        saved_payload = await db.get_verify_token_payload(user_id, token)
+        
+        # यूज़र का वेरिफिकेशन टाइम डेटाबेस में अपडेट करें
         await db.update_user_verification(user_id, time.time())
-        return await message.reply_text("✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ 24 ʜᴏᴜʀs.")
+        
+        bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
+        v_settings = await db.get_verification_settings()
+        timeout_hours = v_settings.get("token_timeout", 86400) // 3600
+
+        if saved_payload:
+            get_files_url = f"https://t.me/{bot_username}?start={saved_payload}"
+            btn = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📂 ɢᴇᴛ ʏᴏᴜʀ ғɪʟᴇs", url=get_files_url)]
+            ])
+            return await message.reply_text(
+                f"✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\n"
+                f"ʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ {timeout_hours} ʜᴏᴜʀs. Click below to get your files!",
+                reply_markup=btn
+            )
+        else:
+            return await message.reply_text(
+                f"✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ {timeout_hours} ʜᴏᴜʀs."
+            )
 
     # 4. Shortener Verification Check
     verified = await is_user_verified(user_id)
     if not verified:
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
-        original_link = f"https://t.me/{bot_username}?start={payload}"
-        short_link = await get_shortlink(original_link)
+        
+        # रैंडम वेरिफिकेशन टोकन जेनरेट करें
+        token = "".join(random.choices(string.ascii_letters + string.digits, k=10))
+        verify_payload = f"verify_{token}"
+        
+        # टोकन और फ़ाइल पेलोड को DB में सेव करें
+        await db.save_verify_token(user_id, token, payload)
+
+        # वेरिफिकेशन के लिए URL तैयार करें
+        verification_link = f"https://t.me/{bot_username}?start={verify_payload}"
+        
+        # शॉर्टनर API से लिंक शॉर्ट करें
+        short_link = await get_shortlink(verification_link)
 
         v_settings = await db.get_verification_settings()
         timeout_hours = v_settings.get("token_timeout", 86400) // 3600
@@ -292,7 +329,6 @@ async def start_cmd(client: Client, message: Message):
         if sent_count > 0:
             await status_msg.edit_text(f"❌ **File Delivery Cancelled by User!** ({sent_count} files sent)")
             if delete_timer > 0:
-                # कैंसिल होने पर भी भेजी गई फ़ाइलों के लिए सबसे नीचे Important मैसेज सेंड होगा और डिलीट टास्क शुरू होगा
                 asyncio.create_task(
                     schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer, payload)
                 )
@@ -305,7 +341,6 @@ async def start_cmd(client: Client, message: Message):
             await status_msg.edit_text(f"✅ **Sent {sent_count} file(s) from {story_name} ({start_ep}-{end_ep})**.")
             
             if delete_timer > 0:
-                # पूर्ण डिलीवरी होने पर सबसे नीचे Important मैसेज सेंड होगा और डिलीट टास्क शुरू होगा
                 asyncio.create_task(
                     schedule_file_deletion(client, message.chat.id, delivered_message_ids, delete_timer, payload)
                 )
@@ -343,7 +378,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
 
         elif data == "help_btn":
             help_text = (
-                "📖 **ʜᴇʟᴘ & ɪɴsᴛʀᴜᴄᴛɪᴏɴs**\n\n"
+                "📖 **ʜᴇʟᴘ & ɪɴsᴛʀᴜᴄᴛɪᴏNs**\n\n"
                 "1. ᴊᴏɪɴ ᴏᴜʀ ᴄʜᴀɴɴᴇʟ ᴡʜᴇʀᴇ ʙᴀᴛᴄʜ ʟɪɴᴋs ᴀʀᴇ ᴘᴏsᴛᴇᴅ.\n"
                 "2. ᴄʟɪᴄᴋ ᴏɴ ᴀɴʏ ᴇᴘɪsᴏᴅᴇ/ʙᴀᴛᴄʜ ʙᴜᴛᴛᴏɴ.\n"
                 "3. ᴛʜᴇ ʙᴏᴛ ᴡɪʟʟ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ ᴀʟʟ ғɪʟᴇs!"
