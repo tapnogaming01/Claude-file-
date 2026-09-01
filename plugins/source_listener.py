@@ -6,6 +6,7 @@ import database as db
 from episode_parser import parse_episodes
 from keyboard import build_batch_keyboard
 from log_utils import log
+from utils import slugify
 
 
 def chunk_list(items, size):
@@ -19,9 +20,15 @@ async def source_channel_handler(client: Client, message: Message):
     if not mapping:
         return  # this channel isn't registered as a source, ignore
 
-    story_slug = mapping["story_slug"]
     story_name = mapping["story_name"]
     target_channel_id = mapping["target_channel_id"]
+
+    # Mappings saved by an older version of the bot may not have a
+    # story_slug field yet — derive and persist it instead of crashing.
+    story_slug = mapping.get("story_slug")
+    if not story_slug:
+        story_slug = slugify(story_name)
+        await db.backfill_story_slug(source_id, story_slug)
 
     caption = message.caption or ""
     episode_numbers = parse_episodes(caption)  # list of strings, e.g. ["211", "212", ...]
