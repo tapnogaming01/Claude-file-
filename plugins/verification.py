@@ -27,16 +27,19 @@ async def get_shortlink(url: str) -> str:
     if not settings.get("status", True):
         return url
 
-    api_url = settings.get("api_url") or getattr(config, "SHORTENER_API_URL", "")
+    raw_api_url = settings.get("api_url") or getattr(config, "SHORTENER_API_URL", "")
     api_key = settings.get("api_key") or getattr(config, "SHORTENER_API_KEY", "")
 
-    if not api_url or not api_key:
+    if not raw_api_url or not api_key:
         print("⚠️ [Verification] Shortener API URL or Key missing!")
         return url
 
-    # Clean domain & handle https:// properly
-    api_url = api_url.replace("https://", "").replace("http://", "").strip("/")
-    full_api_url = f"https://{api_url}/api"
+    # Clean domain and correctly construct full API endpoint
+    cleaned_url = raw_api_url.replace("https://", "").replace("http://", "").strip("/")
+    if cleaned_url.endswith("/api"):
+        full_api_url = f"https://{cleaned_url}"
+    else:
+        full_api_url = f"https://{cleaned_url}/api"
     
     params = {
         "api": api_key,
@@ -44,17 +47,25 @@ async def get_shortlink(url: str) -> str:
     }
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(full_api_url, params=params, timeout=10) as response:
+        # ssl=False fixes SSL Certificate verification errors in standard shorteners
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            async with session.get(full_api_url, params=params, timeout=15) as response:
                 if response.status == 200:
-                    # content_type=None fixes JSON Decode errors on non-standard headers
                     data = await response.json(content_type=None)
+                    print(f"DEBUG Shortener Response: {data}")  # Console log for verification
                     
-                    # Standard API Key Check
-                    if data.get("status") == "success" and "shortlink" in data:
+                    # Check all possible AdLinkFly JSON keys
+                    if data.get("status") == "success":
+                        return data.get("shortlink") or data.get("shortenedUrl") or data.get("link") or data.get("url")
+                    
+                    # Secondary checks if status field is missing
+                    if "shortlink" in data:
                         return data.get("shortlink")
-                    elif "shortlink" in data:
-                        return data.get("shortlink")
+                    elif "shortenedUrl" in data:
+                        return data.get("shortenedUrl")
+                    elif "link" in data:
+                        return data.get("link")
                     elif "url" in data:
                         return data.get("url")
                     else:
