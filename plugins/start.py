@@ -199,7 +199,6 @@ async def start_cmd(client: Client, message: Message):
         param = args[1] if len(args) > 1 else ""
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         
-        # 🟢 Try Again link: If param is empty or "true", don't append a batch parameter
         if param in ["", "true"]:
             try_again_url = f"https://t.me/{bot_username}?start=true"
         else:
@@ -215,7 +214,7 @@ async def start_cmd(client: Client, message: Message):
             reply_markup=join_btn
         )
 
-    # 2. Normal /start Check (जब यूजर बिना डीप लिंक के आए या ForceSub के बाद Try Again दबाए)
+    # 2. Normal /start Check
     if len(args) < 2 or args[1] in ["", "true"]:
         welcome_text = (
             f"ʜɪ [{message.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
@@ -225,7 +224,7 @@ async def start_cmd(client: Client, message: Message):
 
     payload = args[1]
 
-    # 3. Strict Verification Link Handler
+    # 3. Strict Verification Link Handler (Shortener API Response)
     if payload.startswith("verify_"):
         token = payload.split("verify_")[-1]
         
@@ -258,7 +257,8 @@ async def start_cmd(client: Client, message: Message):
                 "This link has expired or was already invalidated due to a bypass attempt. Please generate a new link."
             )
         
-        await db.update_user_verification(user_id, time.time())
+        # ✅ Genuine Verification: set verified_at & reset bypass count to 0
+        await db.set_user_verified(user_id)
         
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         v_settings = await db.get_verification_settings()
@@ -279,16 +279,18 @@ async def start_cmd(client: Client, message: Message):
                 f"✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ {timeout_hours} ʜᴏᴜʀs."
             )
 
-    # 4. Shortener Verification Check (केवल Deep Link के लिए)
+    # 4. Shortener Verification Check (फाइल मांगने पर Secret API Key Wrap करेगा)
     verified = await is_user_verified(user_id)
     if not verified:
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
-        token = "".join(random.choices(string.ascii_letters + string.digits, k=10))
+        token = "".join(random.choices(string.ascii_letters + string.digits, k=12))
         verify_payload = f"verify_{token}"
         
+        # Store dynamic secret key with payload in DB
         await db.save_verify_token(user_id, token, payload)
-        verification_link = f"https://t.me/{bot_username}?start={verify_payload}"
-        short_link = await get_shortlink(verification_link)
+        
+        raw_verification_link = f"https://t.me/{bot_username}?start={verify_payload}"
+        short_link = await get_shortlink(raw_verification_link)
 
         v_settings = await db.get_verification_settings()
         timeout_hours = v_settings.get("token_timeout", 86400) // 3600
