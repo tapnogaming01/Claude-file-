@@ -1,11 +1,14 @@
 import time
+import secrets
 import aiohttp
 import config
 import database as db
 
 async def is_user_verified(user_id: int) -> bool:
+    """यूज़र का वेरिफिकेशन स्टेटस और टाइमआउट चेक करता है"""
     settings = await db.get_verification_settings()
-    # अगर verification OFF है तो सीधे access दें
+    
+    # अगर वेरिफिकेशन OFF है तो सीधे एक्सेस दें
     if not settings.get("status", True):
         return True
 
@@ -16,14 +19,18 @@ async def is_user_verified(user_id: int) -> bool:
     verified_time = user.get("verified_at", 0)
     timeout = settings.get("token_timeout", 86400)
     
-    # Check if configured time has passed
+    # चेक करें कि तय समय (Timeout) बीता है या नहीं
     return (time.time() - verified_time) < timeout
 
 
 async def get_shortlink(url: str) -> str:
+    """
+    Dynamic API Endpoint Wrapper for Shorteners (AdLinkFly, AroLinks, etc.)
+    Strict anti-bypass and fallbacks included.
+    """
     settings = await db.get_verification_settings()
     
-    # अगर verification disabled है
+    # अगर वेरिफिकेशन डिसेबल्ड है तो ओरिजिनल लिंक वापस भेजें
     if not settings.get("status", True):
         return url
 
@@ -34,7 +41,7 @@ async def get_shortlink(url: str) -> str:
         print("⚠️ [Verification] Shortener API URL or Key missing!")
         return url
 
-    # Clean domain and correctly construct full API endpoint
+    # डोमेन को क्लीन करें और सही API एंडपॉइंट बनाएँ
     cleaned_url = raw_api_url.replace("https://", "").replace("http://", "").strip("/")
     if cleaned_url.endswith("/api"):
         full_api_url = f"https://{cleaned_url}"
@@ -47,19 +54,19 @@ async def get_shortlink(url: str) -> str:
     }
 
     try:
-        # ssl=False fixes SSL Certificate verification errors in standard shorteners
+        # SSL और Timeout इश्यू से बचने के लिए कस्टम कनेक्टर्स
+        timeout_config = aiohttp.ClientTimeout(total=15)
         connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(full_api_url, params=params, timeout=15) as response:
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout_config) as session:
+            async with session.get(full_api_url, params=params) as response:
                 if response.status == 200:
                     data = await response.json(content_type=None)
-                    print(f"DEBUG Shortener Response: {data}")  # Console log for verification
                     
-                    # Check all possible AdLinkFly JSON keys
+                    # 🟢 AdLinkFly और अन्य शार्टनर्स के संभावित JSON रिस्पॉन्स कीवर्ड्स
                     if data.get("status") == "success":
                         return data.get("shortlink") or data.get("shortenedUrl") or data.get("link") or data.get("url")
                     
-                    # Secondary checks if status field is missing
                     if "shortlink" in data:
                         return data.get("shortlink")
                     elif "shortenedUrl" in data:
@@ -69,12 +76,12 @@ async def get_shortlink(url: str) -> str:
                     elif "url" in data:
                         return data.get("url")
                     else:
-                        print(f"⚠️ [Verification] API Error Response: {data}")
+                        print(f"⚠️ [Verification] API JSON Keys Mismatch: {data}")
                 else:
-                    print(f"⚠️ [Verification] HTTP Error Status: {response.status}")
+                    print(f"⚠️ [Verification] HTTP Error Status Code: {response.status}")
 
     except Exception as e:
         print(f"❌ [Verification] Exception while generating shortlink: {e}")
 
-    # Fallback to original URL if API fails
+    # अगर API फेल हो जाए तो फॉलबैक के रूप में वही URL वापस भेजें
     return url
