@@ -1,7 +1,6 @@
 import time
 import motor.motor_asyncio
 from pymongo import ReturnDocument
-
 import config
 from utils import slugify
 
@@ -9,25 +8,27 @@ from utils import slugify
 client = motor.motor_asyncio.AsyncIOMotorClient(config.MONGO_URI)
 db = client[config.MONGO_DB_NAME]
 
-mappings_col = db["mappings"]        # Multi-target mappings
-stories_col = db["stories"]          # _id = story_slug
-settings_col = db["settings"]        # _id = "log_channel" / "verification" / "forcesub" / "protection"
-users_col = db["users"]             # _id = user_id -> {verified_at, is_banned, bypass_count}
-verify_tokens_col = db["tokens"]    # Temporary store for shortener verification tokens
+mappings_col = db["mappings"]        
+stories_col = db["stories"]          
+settings_col = db["settings"]        
+users_col = db["users"]             
+verify_tokens_col = db["tokens"]    
 
 
-# ---------------- Title Helper ----------------
+# --- TTL Index Initializer (Deletes tokens after 30 mins automatically) ---
+async def init_db_indexes():
+    await verify_tokens_col.create_index("created_at", expireAfterSeconds=1800)
 
+
+# --- Title Helper ---
 def clean_title_first_line(caption: str) -> str:
-    """कैप्शन की केवल पहली लाइन निकालता है ताकि डेटाबेस में क्लीन टाइटल्स सेव हों"""
     if not caption:
         return "Untitled Story"
     lines = caption.strip().split("\n")
     return lines[0].strip()
 
 
-# ---------------- Mappings (source channel -> story -> target channels) ----------------
-
+# --- Mappings ---
 async def add_mapping(source_channel_id: int, story_name: str, target_channel_id: int) -> str:
     clean_name = clean_title_first_line(story_name)
     story_slug = slugify(clean_name)
@@ -52,7 +53,7 @@ async def add_mapping(source_channel_id: int, story_name: str, target_channel_id
             "pending_episodes": [],
             "pending_file_count": 0,
             "total_blocks": 0,
-            "dashboards": {}  # Format: {target_channel_id_str: message_id}
+            "dashboards": {}
         })
 
     return story_slug
@@ -66,20 +67,15 @@ async def remove_mapping(source_channel_id: int, target_channel_id: int = None):
 
 
 async def get_mappings(source_channel_id: int):
-    """Source ID के सारे mappings fetch करता है"""
     return [doc async for doc in mappings_col.find({"source_channel_id": source_channel_id})]
 
-
-# Listener safety alias for get_mappings
 get_mappings_by_source = get_mappings
-
 
 async def list_mappings():
     return [doc async for doc in mappings_col.find({})]
 
 
-# ---------------- Stories / Episodes ----------------
-
+# --- Stories & Episodes ---
 async def get_story(story_slug: str):
     return await stories_col.find_one({"_id": story_slug})
 
@@ -97,8 +93,6 @@ async def save_episode(story_slug: str, episode_no: str, file_id: str, message_i
         upsert=True,
     )
 
-
-# ---------------- Pending Buffer & Live Dashboard Controls ----------------
 
 async def add_pending_episode(story_slug: str, episode_no: int):
     await stories_col.update_one(
@@ -152,8 +146,7 @@ async def get_dashboard_msg_id(story_slug: str, target_channel_id: int):
     return None
 
 
-# ---------------- Dynamic Verification Settings ----------------
-
+# --- Verification Settings ---
 async def get_verification_settings():
     doc = await settings_col.find_one({"_id": "verification"})
     default_timeout = getattr(config, "VERIFY_EXPIRE_TIME", 86400)
@@ -180,8 +173,7 @@ async def update_verification_settings(key: str, value):
     )
 
 
-# ---------------- Dynamic Protection Settings ----------------
-
+# --- Protection Settings ---
 async def get_protect_settings() -> bool:
     doc = await settings_col.find_one({"_id": "protection"})
     if not doc:
@@ -189,16 +181,13 @@ async def get_protect_settings() -> bool:
     return doc.get("status", False)
 
 
-# ---------------- User Ban & Bypass Counter Logic ----------------
-
+# --- User Ban & Bypass Logic ---
 async def is_user_banned(user_id: int) -> bool:
-    """चेक करता है कि यूज़र बैन है या नहीं"""
     user = await users_col.find_one({"_id": user_id})
     return user.get("is_banned", False) if user else False
 
 
 async def ban_user(user_id: int, reason: str = "Bypassing shortener multiple times"):
-    """यूज़र को मैन्युअली या ऑटोमैटिक बैन करता है"""
     await users_col.update_one(
         {"_id": user_id},
         {"$set": {"is_banned": True, "ban_reason": reason}},
@@ -207,7 +196,6 @@ async def ban_user(user_id: int, reason: str = "Bypassing shortener multiple tim
 
 
 async def unban_user(user_id: int):
-    """यूज़र को अनबैन करता है और उसका बाईपास काउंट रीसेट करता है"""
     await users_col.update_one(
         {"_id": user_id},
         {"$set": {"is_banned": False, "bypass_count": 0}},
@@ -216,7 +204,6 @@ async def unban_user(user_id: int):
 
 
 async def increment_bypass_count(user_id: int) -> int:
-    """बाईपास प्रयास को +1 बढ़ाता है और वर्तमान काउंट रिटर्न करता है"""
     res = await users_col.find_one_and_update(
         {"_id": user_id},
         {"$inc": {"bypass_count": 1}},
@@ -227,25 +214,21 @@ async def increment_bypass_count(user_id: int) -> int:
 
 
 async def get_bypass_count(user_id: int) -> int:
-    """यूजर का वर्तमान बाईपास अटेम्प्ट काउंट देता है"""
     user = await users_col.find_one({"_id": user_id})
     return user.get("bypass_count", 0) if user else 0
 
 
 async def reset_bypass_count(user_id: int):
-    """बाईपास काउंट को वापस 0 करता है"""
     await users_col.update_one(
         {"_id": user_id},
         {"$set": {"bypass_count": 0}}
     )
 
 
-# ---------------- Verification Tokens Helper (Strict Ownership & Auto-Ban) ----------------
-
+# --- Temporary Token Handler ---
 async def save_verify_token(user_id: int, token: str, payload: str):
-    """Shortener Verification के लिए user_id के साथ temporary token और फाइल payload सेव करता है"""
     await verify_tokens_col.update_one(
-        {"token": token},
+        {"user_id": user_id},
         {"$set": {
             "user_id": user_id,
             "token": token,
@@ -257,45 +240,29 @@ async def save_verify_token(user_id: int, token: str, payload: str):
 
 
 async def get_verify_token_payload(user_id: int, token: str):
-    """
-    Strict Ownership Check, Bypass Protection & Auto-Ban:
-    1. Check if token exists in DB.
-    2. Check if token belongs to requesting user_id.
-    3. Check if token was clicked in less than 2 minutes (120s).
-       If clicked early, DELETE token immediately to expire it and track bypass count.
-       Auto-ban if bypass count reaches 5.
-    4. Delete token after successful validation to prevent reuse.
-    Returns: (payload_or_count, status_code)
-    """
     doc = await verify_tokens_col.find_one({"token": token})
     
     if not doc:
-        return None, "invalid"  # Link does not exist or already used/expired
+        return None, "invalid"
     
     if doc.get("user_id") != user_id:
-        return None, "wrong_user"  # Link generated by another user
+        return None, "wrong_user"
 
-    # 🛑 Anti-Bypass Check: 2 min (120 seconds) से पहले आ गया (Bypass Bot behavior)
     created_at = doc.get("created_at", 0)
     if time.time() - created_at < 120:
-        # ❌ टोकन को तुरंत Delete कर दें ताकि दोबारा सेम लिंक काम न करे
         await verify_tokens_col.delete_one({"_id": doc["_id"]})
-        
-        # 📈 Bypass Counter बढ़ाएं
         count = await increment_bypass_count(user_id)
         if count >= 5:
             await ban_user(user_id, "Automated Ban: Tried to bypass shortener 5 times.")
             return None, "auto_banned"
         
-        return count, "bypassed"  # Current count returns along with bypassed status
+        return count, "bypassed"
     
-    # Validation successful: delete token so it cannot be used again
     await verify_tokens_col.delete_one({"_id": doc["_id"]})
     return doc.get("payload", ""), "success"
 
 
-# ---------------- Dynamic Force Sub Settings ----------------
-
+# --- Force Sub Settings ---
 async def get_forcesub_settings():
     doc = await settings_col.find_one({"_id": "forcesub"})
     if not doc:
@@ -314,22 +281,16 @@ async def update_forcesub_settings(key: str, value):
     )
 
 
-# ---------------- User Verification & Logs Settings ----------------
-
+# --- User Verification ---
 async def get_user(user_id: int):
     return await users_col.find_one({"_id": user_id})
 
 
-async def update_user_verification(user_id: int, timestamp: float):
-    await users_col.update_one(
-        {"_id": user_id},
-        {"$set": {"verified_at": timestamp}},
-        upsert=True,
-    )
+async def get_user_verification(user_id: int):
+    return await users_col.find_one({"_id": user_id})
 
 
 async def set_user_verified(user_id: int):
-    """शॉर्टनर सफलता से पार होने पर तुरंत verified_at अपडेट करता है और बाईपास काउंट रीसेट करता है"""
     current_time = time.time()
     await users_col.update_one(
         {"_id": user_id},
