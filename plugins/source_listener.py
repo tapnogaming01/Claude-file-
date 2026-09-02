@@ -1,13 +1,13 @@
 import logging
 from pyrogram import Client, filters
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup
 
 import config
 import database as db
 from episode_parser import extract_story_info
 from dashboard_format import get_dashboard_text
 from utils import slugify
-from keyboard import build_batch_keyboard, chunk_episodes
+from keyboard import create_batch_button, build_batch_keyboard_2col
 from peer_utils import try_resolve
 from log_utils import log
 
@@ -80,79 +80,105 @@ async def source_channel_handler(client: Client, message: Message):
     pending_file_count = updated_story.get("pending_file_count", 0)
     total_blocks = updated_story.get("total_blocks", 0)
 
-    # 6. LIVE DASHBOARD CARD UPDATE (Only in Match Target Channel)
+    # 6. LIVE DASHBOARD CARD UPDATE (Progress track karne ke liye)
     dashboard_msg_id = await db.get_dashboard_msg_id(story_slug, target_channel_id)
-    dashboard_text = get_dashboard_text(
-        story_name=story_name,
-        total_blocks=total_blocks,
-        current_buffer=pending_file_count,
-        max_buffer=config.FILES_PER_BLOCK
-    )
-
-    if dashboard_msg_id:
-        try:
-            await client.edit_message_text(
-                chat_id=target_channel_id,
-                message_id=dashboard_msg_id,
-                text=dashboard_text
-            )
-        except Exception:
-            dashboard_msg_id = None
-
-    if not dashboard_msg_id:
-        try:
-            new_dash = await client.send_message(
-                chat_id=target_channel_id,
-                text=dashboard_text
-            )
-            await db.set_dashboard_msg_id(story_slug, target_channel_id, new_dash.id)
-            dashboard_msg_id = new_dash.id
-            try:
-                await new_dash.pin(disable_notification=True)
-            except Exception:
-                pass
-        except Exception as e:
-            logger.error(f"Failed to send dashboard to {target_channel_id}: {e}")
-
-    # 7. BATCH LIMIT REACHED -> POST BUTTONS
+    
+    # 7. BATCH LIMIT REACHED -> ATTACH SINGLE BATCH BUTTON IN 2-COL GRID
     if pending_file_count >= config.FILES_PER_BLOCK:
         pending_episodes = await db.get_pending_episodes(story_slug)
         if pending_episodes:
             pending_episodes.sort()
 
-            batch_size = getattr(config, "BATCH_SIZE", 10)
-            chunks = chunk_episodes(pending_episodes, batch_size)
-            keyboard = build_batch_keyboard(config.BOT_USERNAME, story_slug, chunks)
+            # बफ़र की मिनिमम और मैक्सिमम रेंज निकालें (उदा: 1-10, 11-20)
+            start_ep = pending_episodes[0]
+            end_ep = pending_episodes[-1]
 
-            post_text = (
-                f"🔥 **{story_name}**\n\n"
-                f"📦 **Episodes:** `{pending_episodes[0]}` - `{pending_episodes[-1]}`\n"
-                f"👇 नीचे दिए गए बटन पर क्लिक करके देखें:"
+            bot_username = getattr(config, "BOT_USERNAME", "") or (await client.get_me()).username
+
+            # 1 से 5 फाइलों का एक ही बटन बनाएगा
+            new_btn = create_batch_button(bot_username, story_slug, start_ep, end_ep)
+
+            # पुराना Dashboard Fetch करें ताकि उसके कीबोर्ड को रिड्यूस/अपेंड किया जा सके
+            existing_keyboard = None
+            if dashboard_msg_id:
+                try:
+                    old_dash_msg = await client.get_messages(chat_id=target_channel_id, message_ids=dashboard_msg_id)
+                    if old_dash_msg and old_dash_msg.reply_markup:
+                        existing_keyboard = old_dash_msg.reply_markup
+                except Exception as e:
+                    logger.warning(f"Could not fetch old dashboard keyboard: {e}")
+
+            # नए बटन को 2-Column Grid में अटैच करें
+            updated_keyboard = build_batch_keyboard_2col(existing_keyboard, new_btn)
+
+            # डैशबोर्ड का टेक्स्ट (स्क्रीनशॉट वाला फॉर्मेट)
+            dash_card_text = (
+                f"**{story_name}**\n"
+                f"EPS 1-{end_ep}\n\n"
+                f"Tap a batch to get it in your DM 👆"
             )
 
-            await client.send_message(
-                chat_id=target_channel_id,
-                text=post_text,
-                reply_markup=keyboard
-            )
-
-            # Reset Buffer & Block Increment
-            await db.reset_pending(story_slug)
-            await db.increment_block_count(story_slug)
-
-            # Reset Live Dashboard to 0 Buffer
-            updated_dash_text = get_dashboard_text(
-                story_name=story_name,
-                total_blocks=total_blocks + 1,
-                current_buffer=0,
-                max_buffer=config.FILES_PER_BLOCK
-            )
+            # Pinned Dashboard update / send करें
             if dashboard_msg_id:
                 try:
                     await client.edit_message_text(
                         chat_id=target_channel_id,
                         message_id=dashboard_msg_id,
-                        text=updated_dash_text
+                        text=dash_card_text,
+                        reply_markup=updated_keyboard
                     )
                 except Exception:
+                    dashboard_msg_id = None
+
+            if not dashboard_msg_id:
+                try:
+                    new_dash = await client.send_message(
+                        chat_id=target_channel_id,
+                        text=dash_card_text,
+                        reply_markup=updated_keyboard
+                    )
+                    await db.set_dashboard_msg_id(story_slug, target_channel_id, new_dash.id)
+                    dashboard_msg_id = new_dash.id
+                    try:
+                        await new_dash.pin(disable_notification=True)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.error(f"Failed to post main dashboard card to {target_channel_id}: {e}")
+
+            # Reset Buffer & Block Increment
+            await db.reset_pending(story_slug)
+            await db.increment_block_count(story_slug)
+
+    else:
+        # अगर 5 फाइलें पूरी नहीं हुई हैं तो लाइव बफ़र स्टेटस अपडेट करें
+        dashboard_text = get_dashboard_text(
+            story_name=story_name,
+            total_blocks=total_blocks,
+            current_buffer=pending_file_count,
+            max_buffer=config.FILES_PER_BLOCK
+        )
+
+        if dashboard_msg_id:
+            try:
+                await client.edit_message_text(
+                    chat_id=target_channel_id,
+                    message_id=dashboard_msg_id,
+                    text=dashboard_text
+                )
+            except Exception:
+                dashboard_msg_id = None
+
+        if not dashboard_msg_id:
+            try:
+                new_dash = await client.send_message(
+                    chat_id=target_channel_id,
+                    text=dashboard_text
+                )
+                await db.set_dashboard_msg_id(story_slug, target_channel_id, new_dash.id)
+                try:
+                    await new_dash.pin(disable_notification=True)
+                except Exception:
                     pass
+            except Exception as e:
+                logger.error(f"Failed to send buffer status to {target_channel_id}: {e}")
