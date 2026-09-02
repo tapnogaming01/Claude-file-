@@ -198,7 +198,12 @@ async def start_cmd(client: Client, message: Message):
         
         param = args[1] if len(args) > 1 else ""
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
-        try_again_url = f"https://t.me/{bot_username}?start={param}" if param else f"https://t.me/{bot_username}?start=true"
+        
+        # 🟢 Try Again link: If param is empty or "true", don't append a batch parameter
+        if param in ["", "true"]:
+            try_again_url = f"https://t.me/{bot_username}?start=true"
+        else:
+            try_again_url = f"https://t.me/{bot_username}?start={param}"
 
         join_btn = InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 ᴊᴏɪɴ ᴄʜᴀɴɴᴇʟ", url=invite_link)],
@@ -210,8 +215,8 @@ async def start_cmd(client: Client, message: Message):
             reply_markup=join_btn
         )
 
-    # 2. Normal /start
-    if len(args) < 2:
+    # 2. Normal /start Check (जब यूजर बिना डीप लिंक के आए या ForceSub के बाद Try Again दबाए)
+    if len(args) < 2 or args[1] in ["", "true"]:
         welcome_text = (
             f"ʜɪ [{message.from_user.first_name}]! ɪ ᴀᴍ ᴀɴ **ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴍᴀʀᴛ ғɪʟᴇ sᴛᴏʀᴇ ʙᴏᴛ** 🤖\n\n"
             "ɪ ᴄᴀɴ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴅᴇʟɪᴠᴇʀ sᴛᴏʀʏ ᴇᴘɪsᴏᴅᴇs ᴀɴᴅ ᴍᴀɴᴀɢᴇ ʙᴀᴛᴄʜ ғɪʟᴇs."
@@ -224,7 +229,6 @@ async def start_cmd(client: Client, message: Message):
     if payload.startswith("verify_"):
         token = payload.split("verify_")[-1]
         
-        # 🔒 database.py से Payload, Bypass Count और Status चेक
         res_payload, status = await db.get_verify_token_payload(user_id, token)
         
         if status == "auto_banned":
@@ -240,7 +244,7 @@ async def start_cmd(client: Client, message: Message):
             )
             
         if status == "bypassed":
-            count = res_payload  # When bypassed, res_payload carries the current count
+            count = res_payload
             return await message.reply_text(
                 f"🚨 **Nice try, hacker!** 😏\n\n"
                 f"भाई, तू सिस्टम को बाईपास करने की कोशिश कर रहा है? 🛑\n"
@@ -254,7 +258,6 @@ async def start_cmd(client: Client, message: Message):
                 "This link has expired or was already invalidated due to a bypass attempt. Please generate a new link."
             )
         
-        # Verification Success: Update user verification timestamp
         await db.update_user_verification(user_id, time.time())
         
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
@@ -276,7 +279,7 @@ async def start_cmd(client: Client, message: Message):
                 f"✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ {timeout_hours} ʜᴏᴜʀs."
             )
 
-    # 4. Shortener Verification Check
+    # 4. Shortener Verification Check (केवल Deep Link के लिए)
     verified = await is_user_verified(user_id)
     if not verified:
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
@@ -332,7 +335,6 @@ async def start_cmd(client: Client, message: Message):
     sent_count = 0
     is_cancelled = False
 
-    # Dynamic Protection Check
     protect_content = await get_protect_status()
 
     for ep_no in range(start_ep, end_ep + 1):
