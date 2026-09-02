@@ -11,10 +11,9 @@ import database as db
 from plugins.verification import is_user_verified, get_shortlink
 from log_utils import log
 
-# Global dictionary to manage ongoing batch delivery cancellation
 CANCELLED_TASKS = set()
 
-# --- Inline Keyboards ---
+# --- Keyboards ---
 MAIN_START_BUTTONS = InlineKeyboardMarkup([
     [
         InlineKeyboardButton("ℹ️ ᴀʙᴏᴜᴛ", callback_data="about_btn"),
@@ -30,23 +29,16 @@ BACK_BUTTON = InlineKeyboardMarkup([
 ])
 
 def get_delivery_keyboard(user_id: int):
-    """UI with Developer & Cancel buttons"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👑 ᴅᴇᴠᴇʟᴏᴘᴇʀ", url="https://t.me/Kaluu")],
         [InlineKeyboardButton("❌ ᴄᴀɴᴄᴇʟ", callback_data=f"cancel_batch_{user_id}")]
     ])
 
 
-# --- Dynamic Content Protection Helper ---
 async def get_protect_status() -> bool:
-    """डेटाबेस से प्रोटेक्ट कंटेंट का डायनेमिक स्टेटस लाता है"""
-    doc = await db.settings_col.find_one({"_id": "protection"})
-    if not doc:
-        return getattr(config, "PROTECT_CONTENT", False)
-    return doc.get("status", False)
+    return await db.get_protect_settings()
 
 
-# --- Auto-Delete Task Helper ---
 async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list, delay_seconds: int, payload: str):
     if delay_seconds <= 0 or not message_ids:
         return
@@ -104,7 +96,6 @@ async def schedule_file_deletion(client: Client, chat_id: int, message_ids: list
         print(f"Error in auto-delete task: {e}")
 
 
-# --- Dynamic Force Join Helper ---
 async def check_force_sub(client: Client, user_id: int):
     fs_settings = await db.get_forcesub_settings()
     
@@ -137,11 +128,11 @@ async def check_force_sub(client: Client, user_id: int):
         return True, chat_target
         
     except (PeerIdInvalid, Exception) as e:
-        print(f"❌ [ForceSub Exception] Error checking membership for {chat_target}: {e}")
+        print(f"❌ [ForceSub Exception] Error checking membership: {e}")
         return True, chat_target
 
 
-# --- Dynamic Protection Toggle Command (Admin Only) ---
+# --- Commands ---
 @Client.on_message(filters.command("protect") & filters.private)
 async def toggle_protect_cmd(client: Client, message: Message):
     if message.from_user.id not in getattr(config, "ADMINS", getattr(config, "ADMIN_IDS", [])):
@@ -167,23 +158,21 @@ async def toggle_protect_cmd(client: Client, message: Message):
         await message.reply_text("⚠️ Invalid argument. Use `/protect on` or `/protect off`")
 
 
-# --- Dynamic Resetting Command (Admin Only) ---
 @Client.on_message(filters.command("reset") & filters.private)
 async def reset_settings_cmd(client: Client, message: Message):
     if message.from_user.id not in getattr(config, "ADMINS", getattr(config, "ADMIN_IDS", [])):
         return
 
     await db.settings_col.delete_many({"_id": {"$in": ["protection", "verification", "forcesub"]}})
-    await message.reply_text("🔄 **All dynamic settings (Protection, Verification, ForceSub) reset to default!**")
+    await message.reply_text("🔄 **All dynamic settings reset to default!**")
 
 
-# --- Commands & Deep Link Handler ---
 @Client.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
     user_id = message.from_user.id
     args = message.command
 
-    # 0. Banned User Check
+    # 0. Banned Check
     if await db.is_user_banned(user_id):
         return await message.reply_text(
             "🚫 **ᴀᴄᴄᴇss ᴅᴇɴɪᴇᴅ!**\n\n"
@@ -199,10 +188,7 @@ async def start_cmd(client: Client, message: Message):
         param = args[1] if len(args) > 1 else ""
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         
-        if param in ["", "true"]:
-            try_again_url = f"https://t.me/{bot_username}?start=true"
-        else:
-            try_again_url = f"https://t.me/{bot_username}?start={param}"
+        try_again_url = f"https://t.me/{bot_username}?start={param}" if param and param != "true" else f"https://t.me/{bot_username}?start=true"
 
         join_btn = InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 ᴊᴏɪɴ ᴄʜᴀɴɴᴇʟ", url=invite_link)],
@@ -224,10 +210,9 @@ async def start_cmd(client: Client, message: Message):
 
     payload = args[1]
 
-    # 3. Strict Verification Link Handler (Shortener API Response)
+    # 3. Verification Link Callback Handler
     if payload.startswith("verify_"):
         token = payload.split("verify_")[-1]
-        
         res_payload, status = await db.get_verify_token_payload(user_id, token)
         
         if status == "auto_banned":
@@ -245,26 +230,23 @@ async def start_cmd(client: Client, message: Message):
         if status == "bypassed":
             count = res_payload
             return await message.reply_text(
-                f"🚨 **Nice try, hacker!** 😏\n\n"
-                f"भाई, तू सिस्टम को बाईपास करने की कोशिश कर रहा है? 🛑\n"
-                f"जितनी देर तू ये शॉर्टकट और बाईपास स्क्रिप्ट लगाने में लगाता है, उतने समय में तो genuine तरीके से लिंक ओपन करके फाइल मिल भी जाती! 🎬😂\n\n"
+                f"🚨 **Nice try!** 😏\n\n"
                 f"⚠️ **Warning:** Bypass Attempt **{count}/5**! (Reach 5 and you will be automatically banned)."
             )
         
         if status == "invalid":
             return await message.reply_text(
                 "❌ **Invalid or Expired Link!**\n\n"
-                "This link has expired or was already invalidated due to a bypass attempt. Please generate a new link."
+                "This link has expired or was already invalidated. Please generate a new link."
             )
         
-        # ✅ Genuine Verification: set verified_at & reset bypass count to 0
         await db.set_user_verified(user_id)
         
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         v_settings = await db.get_verification_settings()
         timeout_hours = v_settings.get("token_timeout", 86400) // 3600
 
-        if res_payload:
+        if res_payload and res_payload != "true":
             get_files_url = f"https://t.me/{bot_username}?start={res_payload}"
             btn = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 ɢᴇᴛ ʏᴏᴜʀ ғɪʟᴇs", url=get_files_url)]
@@ -279,14 +261,13 @@ async def start_cmd(client: Client, message: Message):
                 f"✅ **ᴠᴇʀɪғɪᴄᴀᴛɪᴏɴ sᴜᴄᴄᴇssғᴜʟ!**\n\nʏᴏᴜ ɴᴏᴡ ʜᴀᴠᴇ ᴀᴄᴄᴇss ғᴏʀ {timeout_hours} ʜᴏᴜʀs."
             )
 
-    # 4. Shortener Verification Check (फाइल मांगने पर Secret API Key Wrap करेगा)
+    # 4. Shortener Verification Gate
     verified = await is_user_verified(user_id)
     if not verified:
         bot_username = getattr(config, "BOT_USERNAME", None) or (await client.get_me()).username
         token = "".join(random.choices(string.ascii_letters + string.digits, k=12))
         verify_payload = f"verify_{token}"
         
-        # Store dynamic secret key with payload in DB
         await db.save_verify_token(user_id, token, payload)
         
         raw_verification_link = f"https://t.me/{bot_username}?start={verify_payload}"
@@ -306,7 +287,7 @@ async def start_cmd(client: Client, message: Message):
             reply_markup=verify_keyboard
         )
 
-    # 5. Batch File Delivery Logic
+    # 5. Batch Delivery Processing
     if not payload.startswith("batch-"):
         return await message.reply_text("ʜɪ! ɪ ᴅɪᴅɴ'ᴛ ʀᴇᴄᴏɢɴɪᴢᴇ ᴛʜᴀᴛ ʟɪɴᴋ.")
 
@@ -414,7 +395,6 @@ async def start_cmd(client: Client, message: Message):
     )
 
 
-# --- Callback Handler ---
 @Client.on_callback_query()
 async def callback_handler(client: Client, query: CallbackQuery):
     data = query.data
@@ -435,7 +415,7 @@ async def callback_handler(client: Client, query: CallbackQuery):
                 "• **ғʀᴀᴍᴇᴡᴏʀᴋ:** ᴘʏʀᴏɢʀᴀᴍ (ᴘʏᴛʜᴏɴ 3)\n"
                 "• **ᴅᴀᴛᴀʙᴀsᴇ:** ᴍᴏɴɢᴏᴅʙ ᴀsʏɴᴄ (ᴍᴏᴛᴏʀ)\n"
                 "• **ᴅᴇᴠᴇʟᴏᴘᴇʀ:** [ᴋᴀʟᴜᴜ](https://t.me/Kaluu)\n"
-                "• **ᴠᴇsɪᴏɴ:** 2.0"
+                "• **ᴠᴇʀsɪᴏɴ:** 2.0"
             )
             await query.message.edit_text(about_text, reply_markup=BACK_BUTTON, disable_web_page_preview=True)
 
