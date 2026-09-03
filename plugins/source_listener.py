@@ -5,11 +5,9 @@ from pyrogram.types import Message
 import config
 import database as db
 from episode_parser import extract_story_info
-from dashboard_format import get_dashboard_text
 from utils import slugify
-from keyboard import build_batch_keyboard, chunk_episodes
+from keyboard import build_grid_keyboard_from_captions, to_small_caps
 from peer_utils import try_resolve
-from log_utils import log
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +16,7 @@ logger = logging.getLogger(__name__)
 async def source_channel_handler(client: Client, message: Message):
     source_id = message.chat.id
     
-    # 1. इस Source Channel की सभी Target Mappings फ़ेच करें
+    # 1. Fetch Target Mappings for Source Channel
     mappings = await db.get_mappings_by_source(source_id)
     if not mappings:
         return
@@ -27,15 +25,14 @@ async def source_channel_handler(client: Client, message: Message):
     if not caption:
         return
 
-    # 2. Captions से Story Name और Episodes निकालें
+    # 2. Extract Story Name & Episode Numbers
     extracted_name, episode_numbers = extract_story_info(caption)
     if not episode_numbers:
         return
 
-    # Extracted name को Slugify करें
     extracted_slug = slugify(extracted_name) if extracted_name else ""
 
-    # 3. EXACT STORY MATCHING LOGIC
+    # 3. Exact Story Matching Logic
     matched_mapping = None
     caption_lower = caption.lower()
 
@@ -43,17 +40,14 @@ async def source_channel_handler(client: Client, message: Message):
         m_slug = m.get("story_slug", "")
         m_name = m.get("story_name", "").lower()
 
-        # (A) Check if Slug matches
         if extracted_slug and (extracted_slug in m_slug or m_slug in extracted_slug):
             matched_mapping = m
             break
         
-        # (B) Check if Story Name is directly inside Caption text
         if m_name and m_name in caption_lower:
             matched_mapping = m
             break
 
-    # 🚨 STRICT CHECK: अगर किसी भी Mapped Story से नाम मैच नहीं हुआ तो आगे न बढ़ें!
     if not matched_mapping:
         logger.warning(f"No mapped story found matching caption: '{caption}'")
         return
@@ -71,90 +65,51 @@ async def source_channel_handler(client: Client, message: Message):
     if not file_id:
         return
 
-    # 5. SAVE EPISODE & BUFFER INCREMENTS FOR MATCHED STORY ONLY
+    # Extract Range for current file (e.g., Ep 11 to 21 -> start: 11, end: 21)
+    ep_start = min(episode_numbers)
+    ep_end = max(episode_numbers)
+
+    # 5. Save Episodes & Buffer Ranges
     for ep_no in episode_numbers:
         await db.save_episode(story_slug, str(ep_no), file_id, message.id, source_id)
-        await db.add_pending_episode(story_slug, int(ep_no))
+
+    # Save per-file caption range in DB pending list
+    await db.add_pending_range(story_slug, ep_start, ep_end)
 
     updated_story = await db.increment_pending_file_count(story_slug)
     pending_file_count = updated_story.get("pending_file_count", 0)
-    total_blocks = updated_story.get("total_blocks", 0)
 
-    # 6. LIVE DASHBOARD CARD UPDATE (Only in Match Target Channel)
-    dashboard_msg_id = await db.get_dashboard_msg_id(story_slug, target_channel_id)
-    dashboard_text = get_dashboard_text(
-        story_name=story_name,
-        total_blocks=total_blocks,
-        current_buffer=pending_file_count,
-        max_buffer=config.FILES_PER_BLOCK
-    )
-
-    if dashboard_msg_id:
-        try:
-            await client.edit_message_text(
-                chat_id=target_channel_id,
-                message_id=dashboard_msg_id,
-                text=dashboard_text
-            )
-        except Exception:
-            dashboard_msg_id = None
-
-    if not dashboard_msg_id:
-        try:
-            new_dash = await client.send_message(
-                chat_id=target_channel_id,
-                text=dashboard_text
-            )
-            await db.set_dashboard_msg_id(story_slug, target_channel_id, new_dash.id)
-            dashboard_msg_id = new_dash.id
-            try:
-                await new_dash.pin(disable_notification=True)
-            except Exception:
-                pass
-        except Exception as e:
-            logger.error(f"Failed to send dashboard to {target_channel_id}: {e}")
-
-    # 7. BATCH LIMIT REACHED -> POST BUTTONS
+    # 6. BATCH LIMIT REACHED (5 Files Completed) -> Post Premium Card
     if pending_file_count >= config.FILES_PER_BLOCK:
-        pending_episodes = await db.get_pending_episodes(story_slug)
-        if pending_episodes:
-            pending_episodes.sort()
+        caption_ranges = await db.get_pending_ranges(story_slug)
+        if caption_ranges:
+            bot_username = getattr(config, "BOT_USERNAME", "") or (await client.get_me()).username
+            
+            # Generate 2-Column Grid Keyboard with Small Caps Utility Buttons
+            keyboard = build_grid_keyboard_from_captions(caption_ranges, bot_username, story_slug)
 
-            batch_size = getattr(config, "BATCH_SIZE", 10)
-            chunks = chunk_episodes(pending_episodes, batch_size)
-            keyboard = build_batch_keyboard(config.BOT_USERNAME, story_slug, chunks)
+            max_ep = max(r[1] for r in caption_ranges)
+            min_ep = min(r[0] for r in caption_ranges)
+
+            # Small Caps Text Formatting
+            formatted_title = to_small_caps(story_name)
+            eps_label = to_small_caps("EPS")
 
             post_text = (
-                f"🔥 **{story_name}**\n\n"
-                f"📦 **Episodes:** `{pending_episodes[0]}` - `{pending_episodes[-1]}`\n"
-                f"👇 नीचे दिए गए बटन पर क्लिक करके देखें:"
+                f"✨ **{formatted_title}**\n"
+                f"⚡ **{eps_label} {min_ep} - {max_ep}**"
             )
 
-            await client.send_message(
-                chat_id=target_channel_id,
-                text=post_text,
-                reply_markup=keyboard
-            )
+            try:
+                await client.send_message(
+                    chat_id=target_channel_id,
+                    text=post_text,
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                logger.error(f"Failed to post card to {target_channel_id}: {e}")
 
-            # Reset Buffer & Block Increment
+            # Reset Buffer & Pending Ranges
+            await db.reset_pending_ranges(story_slug)
             await db.reset_pending(story_slug)
             await db.increment_block_count(story_slug)
-
-            # Reset Live Dashboard to 0 Buffer
-            updated_dash_text = get_dashboard_text(
-                story_name=story_name,
-                total_blocks=total_blocks + 1,
-                current_buffer=0,
-                max_buffer=config.FILES_PER_BLOCK
-            )
-            if dashboard_msg_id:
-                try:
-                    await client.edit_message_text(
-                        chat_id=target_channel_id,
-                        message_id=dashboard_msg_id,
-                        text=updated_dash_text
-                    )
-                except Exception:
-                    pass
-
-
