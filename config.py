@@ -39,4 +39,4 @@ PORT = int(os.environ.get("PORT", "8080"))
 SESSION_NAME = os.environ.get("SESSION_NAME", "episode_bot")
 
 # Auto-Delete Configuration (0 = OFF, 600 = 10 Minutes, 3600 = 1 Hour)
-AUTO_DELETE_TIME = int(os.environ.get("AUTO_DELETE_TIME", "600"))
+AUTO_DELETE_TIME = int(os.environ.get("AUTO_DELETE_TIME", "10800"))
