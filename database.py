@@ -51,6 +51,7 @@ async def add_mapping(source_channel_id: int, story_name: str, target_channel_id
             "name": clean_name,
             "episodes": {},
             "pending_episodes": [],
+            "pending_ranges": [],
             "pending_file_count": 0,
             "total_blocks": 0,
             "dashboards": {}
@@ -99,6 +100,35 @@ async def add_pending_episode(story_slug: str, episode_no: int):
         {"_id": story_slug},
         {"$addToSet": {"pending_episodes": episode_no}},
         upsert=True,
+    )
+
+
+async def add_pending_range(story_slug: str, start_ep: int, end_ep: int):
+    """
+    Har file ki start aur end range ko list mein append karta hai.
+    """
+    await stories_col.update_one(
+        {"_id": story_slug},
+        {"$push": {"pending_ranges": [start_ep, end_ep]}},
+        upsert=True,
+    )
+
+
+async def get_pending_ranges(story_slug: str):
+    """
+    Pending range tuples/lists fetch karta hai 2x2 grid buttons ke liye.
+    """
+    story = await stories_col.find_one({"_id": story_slug})
+    return story.get("pending_ranges", []) if story else []
+
+
+async def reset_pending_ranges(story_slug: str):
+    """
+    Pending ranges buffer clear karta hai jab card post ho jaye.
+    """
+    await stories_col.update_one(
+        {"_id": story_slug},
+        {"$set": {"pending_ranges": []}},
     )
 
 
